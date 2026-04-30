@@ -1,0 +1,8 @@
+[package]
+name = "secret_sharing_poc"
+edition = "2024"
+
+[dependencies]
+
+[environments]
+localnet = "063ea562"

@@ -1,0 +1,6 @@
+target/
+.env
+.sui/
+contracts/build/
+contracts/Move.lock
+.claude/
