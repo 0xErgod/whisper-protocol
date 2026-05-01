@@ -1,0 +1,162 @@
+name: deploy-contract
+
+# Manually triggered. Publishes the Whisper Move package to the chosen
+# network using a CI-only Sui keypair, then commits the resulting package
+# id + registry id to networks.json on a fresh branch and opens a PR.
+#
+# Mainnet deploys are NOT automated — even though `mainnet` is offered as
+# a network option, the workflow refuses to run for it without an explicit
+# `i-understand-this-is-mainnet` confirmation string. Mainnet should
+# remain a manual checklist-driven release.
+#
+# Required repository secrets:
+#   - SUI_DEPLOY_KEY: bech32 `suiprivkey…` of a funded keypair on the
+#     target network. Use a keypair dedicated to CI deploys; never reuse
+#     a personal address.
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: target network
+        required: true
+        default: testnet
+        type: choice
+        options:
+          - testnet
+          - mainnet
+      mainnet_confirmation:
+        description: type "i-understand-this-is-mainnet" if deploying to mainnet
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.network }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: refuse mainnet without confirmation
+        if: inputs.network == 'mainnet' && inputs.mainnet_confirmation != 'i-understand-this-is-mainnet'
+        run: |
+          echo "::error::Mainnet deploy requires explicit confirmation."
+          exit 1
+
+      - name: install sui cli
+        run: |
+          set -euo pipefail
+          tag=$(curl -sL --fail \
+            "https://api.github.com/repos/MystenLabs/sui/releases?per_page=30" \
+            | grep '"tag_name":' \
+            | grep -oE 'mainnet-v[0-9.]+' \
+            | head -1)
+          if [ -z "$tag" ]; then
+            echo "::error::could not resolve latest sui mainnet release tag"
+            exit 1
+          fi
+          echo "Using sui release: $tag"
+          curl -L --fail -o sui.tgz \
+            "https://github.com/MystenLabs/sui/releases/download/$tag/sui-$tag-ubuntu-x86_64.tgz"
+          mkdir -p "$HOME/.local/bin"
+          # Archive entries are prefixed with `./` so the path here matters.
+          tar -xzf sui.tgz -C "$HOME/.local/bin" ./sui
+          chmod +x "$HOME/.local/bin/sui"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: configure sui client
+        env:
+          SUI_DEPLOY_KEY: ${{ secrets.SUI_DEPLOY_KEY }}
+          NETWORK: ${{ inputs.network }}
+        run: |
+          set -euo pipefail
+          if [ "$NETWORK" = "testnet" ]; then
+            RPC=https://fullnode.testnet.sui.io:443
+          else
+            RPC=https://fullnode.mainnet.sui.io:443
+          fi
+          sui client --yes new-env --alias deploy --rpc "$RPC"
+          sui client switch --env deploy
+          echo "$SUI_DEPLOY_KEY" | sui keytool import --alias ci -
+
+      - name: faucet (testnet only)
+        if: inputs.network == 'testnet'
+        run: |
+          set -euo pipefail
+          ADDR=$(sui client active-address)
+          curl -s -X POST https://faucet.testnet.sui.io/v1/gas \
+            -H "Content-Type: application/json" \
+            -d "{\"FixedAmountRequest\":{\"recipient\":\"$ADDR\"}}" || true
+          # Faucet is best-effort; if balance still missing the publish step fails fast.
+
+      - name: publish package
+        id: publish
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          sui client publish contracts --gas-budget 200000000 --json > out/publish.raw 2>&1 || {
+            echo "::error::sui publish failed"
+            cat out/publish.raw
+            exit 1
+          }
+          # Strip any non-JSON prefix the CLI may add.
+          python3 -c "import sys, json; t = open('out/publish.raw').read(); s = t.find('{'); print(t[s:])" > out/publish.json
+          PKG=$(python3 -c "import json; j = json.load(open('out/publish.json')); print(next(c['packageId'] for c in j['objectChanges'] if c['type'] == 'published'))")
+          REG=$(python3 -c "import json; j = json.load(open('out/publish.json')); print(next(c['objectId'] for c in j['objectChanges'] if c.get('objectType', '').endswith('::secret_sharing::KeyRegistry')))")
+          DIGEST=$(python3 -c "import json; print(json.load(open('out/publish.json'))['digest'])")
+          DEPLOYER=$(sui client active-address)
+          echo "package_id=$PKG" >> "$GITHUB_OUTPUT"
+          echo "registry_id=$REG" >> "$GITHUB_OUTPUT"
+          echo "tx_digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "deployer=$DEPLOYER" >> "$GITHUB_OUTPUT"
+
+      - name: update networks.json
+        env:
+          NETWORK: ${{ inputs.network }}
+          PKG: ${{ steps.publish.outputs.package_id }}
+          REG: ${{ steps.publish.outputs.registry_id }}
+          DIG: ${{ steps.publish.outputs.tx_digest }}
+          DEP: ${{ steps.publish.outputs.deployer }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, time
+          path = "networks.json"
+          with open(path) as fh:
+              data = json.load(fh)
+          net = os.environ["NETWORK"]
+          data["networks"][net] = {
+              "rpcUrl": data["networks"][net]["rpcUrl"],
+              "packageId": os.environ["PKG"],
+              "registryId": os.environ["REG"],
+              "deployedAtMs": int(time.time() * 1000),
+              "deployer": os.environ["DEP"],
+              "txDigest": os.environ["DIG"],
+              "note": data["networks"][net].get("note"),
+          }
+          with open(path, "w") as fh:
+              json.dump(data, fh, indent=2)
+              fh.write("\n")
+          PY
+
+      - name: open PR with new IDs
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: deploy/${{ inputs.network }}-${{ github.run_id }}
+          title: "chore: ${{ inputs.network }} deploy ${{ steps.publish.outputs.package_id }}"
+          commit-message: "chore: deploy whisper to ${{ inputs.network }}"
+          body: |
+            Deployed Whisper to **${{ inputs.network }}**.
+
+            - **Package**: `${{ steps.publish.outputs.package_id }}`
+            - **Registry**: `${{ steps.publish.outputs.registry_id }}`
+            - **Tx digest**: `${{ steps.publish.outputs.tx_digest }}`
+            - **Deployer**: `${{ steps.publish.outputs.deployer }}`
+
+            Triggered by @${{ github.actor }} via workflow_dispatch.
+
+            Merge this PR to make the new IDs canonical for the SDK's network constants.

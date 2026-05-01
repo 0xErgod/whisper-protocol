@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ts:
+    name: typecheck + build (typescript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Don't pass `version:` here — package.json's "packageManager" field
+      # already pins pnpm@8.15.8, and pnpm/action-setup@v4 errors out if
+      # both are specified.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck packages
+        run: pnpm -r --filter "./packages/*" run typecheck
+
+      - name: build packages
+        run: pnpm -r --filter "./packages/*" run build
+
+      - name: typecheck web
+        run: pnpm --filter whisper-web run typecheck
+
+      - name: build web
+        run: pnpm --filter whisper-web run build
+
+  rust:
+    name: rust cli check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
+      - run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
+
+  move:
+    name: move package build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install sui cli
+        run: |
+          set -euo pipefail
+          # Pull the latest mainnet release tarball at runtime so we don't
+          # have to bump a version pin every couple weeks.
+          tag=$(curl -sL --fail \
+            "https://api.github.com/repos/MystenLabs/sui/releases?per_page=30" \
+            | grep '"tag_name":' \
+            | grep -oE 'mainnet-v[0-9.]+' \
+            | head -1)
+          if [ -z "$tag" ]; then
+            echo "::error::could not resolve latest sui mainnet release tag"
+            exit 1
+          fi
+          echo "Using sui release: $tag"
+          curl -L --fail -o sui.tgz \
+            "https://github.com/MystenLabs/sui/releases/download/$tag/sui-$tag-ubuntu-x86_64.tgz"
+          mkdir -p "$HOME/.local/bin"
+          # Archive entries are prefixed with `./` (e.g. `./sui`), so we
+          # need the matching path or we get "Not found in archive".
+          tar -xzf sui.tgz -C "$HOME/.local/bin" ./sui
+          chmod +x "$HOME/.local/bin/sui"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - run: sui --version
+      - run: sui move build --path contracts

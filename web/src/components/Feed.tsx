@@ -1,17 +1,15 @@
 import { bytesToHex } from "@noble/hashes/utils";
-import type { FeedEvent, FeedEnvelopeEvent, FeedKeyEvent } from "../sui/queries";
-import {
-  labelForAddress,
-  normalizeAddress,
-} from "../crypto/identities";
-import { tryDecrypt } from "../crypto/decrypt";
-import { usePerspective } from "../perspective/context";
+import { useCurrentAccount } from "@mysten/dapp-kit";
+import { normalizeAddress, tryDecryptUtf8 } from "@whisper-protocol/sdk";
+import type { FeedEvent, FeedEnvelopeEvent, FeedKeyEvent } from "@whisper-protocol/sdk/feed";
+import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
 import { RawId } from "./RawId";
-import { gasBreakdownTooltip, shortGas } from "../sui/gas";
+import { gasBreakdownTooltip, shortGas } from "../whisper/gas";
 
 interface Props {
   events: FeedEvent[];
   loading: boolean;
+  keys: DerivedEncryptionKeypair | null;
 }
 
 function formatRelative(ms: number, now: number): string {
@@ -31,7 +29,7 @@ function ciphertextPreview(b: Uint8Array): string {
   return `${hex.slice(0, 88)}…${hex.slice(-8)}`;
 }
 
-function KeyRow({ ev, now }: { ev: FeedKeyEvent; now: number }) {
+function KeyRow({ ev, now, isYou }: { ev: FeedKeyEvent; now: number; isYou: boolean }) {
   return (
     <div className="row-event kind-key">
       <div className="row-event-side">
@@ -44,8 +42,7 @@ function KeyRow({ ev, now }: { ev: FeedKeyEvent; now: number }) {
       <div className="row-event-body">
         <div className="bubble">
           <div className="bubble-header">
-            <span className="tag tag-key">REGISTERED</span>
-            <span className="address-known">{labelForAddress(ev.account)}</span>
+            <span className="tag tag-key">{isYou ? "YOU REGISTERED" : "REGISTERED"}</span>
             <RawId value={ev.account} kind="address" />
             <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>
               tx <RawId value={ev.txDigest} kind="tx" />
@@ -60,17 +57,26 @@ function KeyRow({ ev, now }: { ev: FeedKeyEvent; now: number }) {
   );
 }
 
-function EnvelopeRow({ ev, now }: { ev: FeedEnvelopeEvent; now: number }) {
-  const { identity, perspective } = usePerspective();
-  const youAddr = identity ? normalizeAddress(identity.suiAddress) : null;
-  const isOutgoing = !!youAddr && youAddr === ev.sender;
-  const isIncoming = !!youAddr && youAddr === ev.recipient;
+function EnvelopeRow({
+  ev,
+  now,
+  myAddress,
+  keys,
+}: {
+  ev: FeedEnvelopeEvent;
+  now: number;
+  myAddress: string | null;
+  keys: DerivedEncryptionKeypair | null;
+}) {
+  const isOutgoing = !!myAddress && myAddress === ev.sender;
+  const isIncoming = !!myAddress && myAddress === ev.recipient;
 
   let plaintext: string | null = null;
-  if (isIncoming && identity) {
-    plaintext = tryDecrypt(identity, {
-      sender: ev.sender,
-      recipient: ev.recipient,
+  if (isIncoming && keys) {
+    plaintext = tryDecryptUtf8({
+      recipientPrivateKey: keys.encryptionPrivateKey,
+      senderAddress: ev.sender,
+      recipientAddress: ev.recipient,
       ephPubkey: ev.ephPubkey,
       nonce: ev.nonce,
       ciphertext: ev.ciphertext,
@@ -106,22 +112,12 @@ function EnvelopeRow({ ev, now }: { ev: FeedEnvelopeEvent; now: number }) {
         <div className={bubbleClass}>
           <div className="bubble-header">
             <span className={tagClass}>{tagText}</span>
-            <span className={youAddr === ev.sender ? "address you" : "address-known"}>
-              {labelForAddress(ev.sender)}
-            </span>
+            <RawId value={ev.sender} kind="address" />
             <span className="arrow">→</span>
-            <span className={youAddr === ev.recipient ? "address you" : "address-known"}>
-              {labelForAddress(ev.recipient)}
-            </span>
+            <RawId value={ev.recipient} kind="address" />
             <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>{ev.schema}</span>
           </div>
           <div className="bubble-meta">
-            <span>
-              from <RawId value={ev.sender} kind="address" />
-            </span>
-            <span>
-              to <RawId value={ev.recipient} kind="address" />
-            </span>
             <span>
               env <RawId value={ev.envelopeId} kind="envelope" />
             </span>
@@ -132,8 +128,7 @@ function EnvelopeRow({ ev, now }: { ev: FeedEnvelopeEvent; now: number }) {
           {isOutgoing ? (
             <div className="bubble-body outgoing">
               <em style={{ fontStyle: "normal", color: "var(--text-dim)" }}>
-                you authored this; the plaintext is not on chain. preview only available to{" "}
-                {labelForAddress(ev.recipient)}.
+                you authored this; the plaintext is not on chain. preview only available to the recipient.
               </em>
             </div>
           ) : plaintext !== null ? (
@@ -141,7 +136,7 @@ function EnvelopeRow({ ev, now }: { ev: FeedEnvelopeEvent; now: number }) {
           ) : (
             <div className="bubble-body cipher" title="raw ciphertext (AEAD-protected)">
               {ciphertextPreview(ev.ciphertext)}
-              {perspective !== "observer" && ev.ciphertext.length > 0 && (
+              {myAddress && ev.ciphertext.length > 0 && !isIncoming && (
                 <div style={{ marginTop: "0.4rem", color: "var(--text-faint)" }}>
                   · not addressed to you · cannot derive AEAD key
                 </div>
@@ -154,7 +149,9 @@ function EnvelopeRow({ ev, now }: { ev: FeedEnvelopeEvent; now: number }) {
   );
 }
 
-export function Feed({ events, loading }: Props) {
+export function Feed({ events, loading, keys }: Props) {
+  const account = useCurrentAccount();
+  const myAddress = account ? normalizeAddress(account.address) : null;
   const now = Date.now();
   return (
     <div>
@@ -166,15 +163,27 @@ export function Feed({ events, loading }: Props) {
       </div>
       {events.length === 0 ? (
         <div className="feed-empty">
-          No events yet. Run <code>cargo run -- register-key alice</code> from the project root.
+          No events yet. Connect a wallet, derive your encryption keypair, and register it
+          to start the feed.
         </div>
       ) : (
         <div className="feed">
           {events.map((ev) =>
             ev.kind === "key" ? (
-              <KeyRow key={`${ev.txDigest}-${ev.account}`} ev={ev} now={now} />
+              <KeyRow
+                key={`${ev.txDigest}-${ev.account}`}
+                ev={ev}
+                now={now}
+                isYou={!!myAddress && myAddress === ev.account}
+              />
             ) : (
-              <EnvelopeRow key={ev.envelopeId || ev.txDigest} ev={ev} now={now} />
+              <EnvelopeRow
+                key={ev.envelopeId || ev.txDigest}
+                ev={ev}
+                now={now}
+                myAddress={myAddress}
+                keys={keys}
+              />
             ),
           )}
         </div>

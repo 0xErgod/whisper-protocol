@@ -1,0 +1,71 @@
+name: publish-sdk
+
+# Triggered by pushing a tag that matches the package being released.
+# Tag conventions:
+#   sdk-vX.Y.Z              — publish @whisper-protocol/sdk
+#   wallet-derived-vX.Y.Z   — publish @whisper-protocol/wallet-derived-keys
+#
+# The job runs `npm publish --provenance` so npm signs the package via the
+# GitHub OIDC token, proving the artifact came from this repo. Reviewers
+# look for the provenance badge on npmjs.com.
+
+on:
+  push:
+    tags:
+      - "sdk-v*"
+      - "wallet-derived-v*"
+
+permissions:
+  contents: read
+  # Required by npm provenance — npm verifies the OIDC token from GitHub.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm version is read from package.json's "packageManager" field;
+      # passing `version:` here would conflict and fail the step.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: select package
+        id: select
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            sdk-v*)
+              echo "package=@whisper-protocol/sdk" >> "$GITHUB_OUTPUT"
+              echo "filter=@whisper-protocol/sdk" >> "$GITHUB_OUTPUT"
+              ;;
+            wallet-derived-v*)
+              echo "package=@whisper-protocol/wallet-derived-keys" >> "$GITHUB_OUTPUT"
+              echo "filter=@whisper-protocol/wallet-derived-keys" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unrecognized tag $tag"
+              exit 1
+              ;;
+          esac
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: build target package
+        run: pnpm --filter "${{ steps.select.outputs.filter }}" run build
+
+      - name: publish to npm with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          pnpm --filter "${{ steps.select.outputs.filter }}" \
+            publish --no-git-checks --access public --provenance

@@ -1,20 +1,42 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  SuiClientProvider,
+  WalletProvider,
+} from "@mysten/dapp-kit";
 import { App } from "./App";
-import { PerspectiveProvider } from "./perspective/context";
 import { AuditProvider } from "./perspective/audit";
+import { RPC_URL } from "./whisper/client";
+import { whisperTheme } from "./whisper/theme";
+import "@mysten/dapp-kit/dist/index.css";
 import "./styles/tokens.css";
 import "./styles/app.css";
+
+const queryClient = new QueryClient();
+
+// Network alias must be one of localnet/devnet/testnet/mainnet so that
+// dApp Kit can pass `sui:<network>` as the chain identifier to wallets.
+// Switch this when pointing the dApp at a different Sui environment.
+const ACTIVE_NETWORK = "testnet" as const;
+
+const networks = {
+  testnet: { url: RPC_URL },
+} as const;
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 
 createRoot(root).render(
   <StrictMode>
-    <AuditProvider>
-      <PerspectiveProvider>
-        <App />
-      </PerspectiveProvider>
-    </AuditProvider>
+    <QueryClientProvider client={queryClient}>
+      <SuiClientProvider networks={networks} defaultNetwork={ACTIVE_NETWORK}>
+        <WalletProvider autoConnect theme={whisperTheme}>
+          <AuditProvider>
+            <App />
+          </AuditProvider>
+        </WalletProvider>
+      </SuiClientProvider>
+    </QueryClientProvider>
   </StrictMode>,
 );

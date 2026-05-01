@@ -4,6 +4,17 @@
 
 Draft specification for a proof of concept.
 
+> **Update.** The "client has direct access to the user's Ed25519 private key"
+> assumption used throughout this document (notably in *Core Idea* and *Phase 1*
+> of the PoC plan) is a demo-mode shortcut, not the target design. The
+> production approach derives the X25519 encryption keypair from a
+> wallet-produced **signature** over a domain-separated canonical message —
+> see [wallet-signature-derived-keys.md](./wallet-signature-derived-keys.md)
+> for the full scheme, the rationale, and the trade-offs (no forward
+> secrecy, Ed25519-only gating, phishing surface, etc.). The on-chain data
+> model, hybrid encryption, and indexer design in this document are
+> unchanged.
+
 ## Goal
 
 Enable two or more Sui wallets to exchange private structured data over public Sui infrastructure without relying on centralized key servers or backend custody.
@@ -167,7 +178,27 @@ The indexer stores the latest key registration per `(game_id, player)`.
 
 ## On-Chain Data Model
 
-### Encryption Key Binding
+> **As-built vs. proposed.** This section describes a future
+> multi-recipient, game-scoped, recipient-hidden shape. The current PoC
+> contract uses a simpler single-recipient ECIES form with no `game_id`
+> and an explicit `recipient` field — see
+> [secret-sharing-poc-build.md](./secret-sharing-poc-build.md) for the
+> as-built Move structures and function signatures. The differences are:
+>
+> - **No `game_id`.** The PoC has a single global registry; multi-game
+>   scoping is a follow-up.
+> - **Single recipient, no wrapped keys.** The PoC uses direct ECIES;
+>   the `wrapped_keys: vector<vector<u8>>` form below is the future
+>   multi-recipient shape.
+> - **`recipient: address`, not `recipient_hint: Option<address>`.**
+>   Recipient privacy via trial-decrypt is a follow-up.
+> - **`key_version` not `key_version_hint`.** The PoC enforces version
+>   match on chain (`E_STALE_KEY_VERSION`), so the field is not a hint.
+> - **No `signing_scheme` / `signing_pubkey` in the registration event.**
+>   The Sui transaction sender is the binding; the registration event
+>   only carries encryption material.
+
+### Encryption Key Binding (proposed multi-game shape)
 
 ```move
 public struct EncryptionKeyRegistered has copy, drop {
@@ -184,7 +215,7 @@ public struct EncryptionKeyRegistered has copy, drop {
 
 The latest key version should be used for new messages.
 
-### Encrypted Envelope
+### Encrypted Envelope (proposed multi-recipient shape)
 
 ```move
 public struct EncryptedEnvelope has key, store {
@@ -358,18 +389,35 @@ This avoids persistent tribe-wide shared keys.
 
 ## Key Rotation
 
-A player may rotate their encryption key only by changing the source Ed25519 wallet key or by moving to a future dedicated encryption key design.
+> **Updated.** Under the wallet-signature derivation in
+> [wallet-signature-derived-keys.md](./wallet-signature-derived-keys.md),
+> rotation is performed by bumping the `version:` line in the canonical
+> message — the wallet derives a fresh X25519 keypair, the client
+> re-registers, and the on-chain `key_version` increments. This is
+> rotation-as-versioning: the old key is **not** revoked in any
+> cryptographic sense (the wallet can always re-derive it). True
+> revocation requires either a Signal-style ratchet on top of the
+> envelope or an encryption keypair held outside the wallet. See the
+> "Trade-offs §8" section of the wallet-signature spec for details.
+
+The on-chain `register_encryption_key` is idempotent on second call: it
+overwrites the entry and bumps `key_version`. The
+`E_STALE_KEY_VERSION` guard on `post_envelope` ensures senders racing a
+rotation are told to retry rather than silently posting to a dead key.
 
 ```text
-1. Player uses a new Ed25519 wallet key or future dedicated encryption key.
-2. Client derives or obtains the new X25519 public key.
-3. Client publishes a new key registration with key_version + 1.
-4. New messages use the latest key version.
+1. Client constructs a new canonical message with version: N+1.
+2. Wallet signs it; client derives the new X25519 keypair.
+3. Client calls register_encryption_key with the new public key.
+4. The on-chain entry is overwritten and key_version increments to N+1.
+5. New senders pick up the new public key from the registry; their
+   post_envelope calls assert key_version = N+1.
+6. Old envelopes encrypted under v_N remain decryptable as long as the
+   wallet can re-derive the v_N keypair — which it always can,
+   deterministically, for the same wallet.
 ```
 
-Old messages require old keys unless they are re-encrypted.
-
-The PoC should support a revocation event, but key rotation is limited when encryption keys are deterministically derived from wallet keys.
+Re-encryption of old envelopes is not in scope for the PoC.
 
 ## Privacy Properties
 

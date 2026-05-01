@@ -1,31 +1,55 @@
 import { useEffect, useRef, useState } from "react";
-import { PerspectiveBar } from "./components/PerspectiveBar";
+import { useCurrentAccount } from "@mysten/dapp-kit";
+import type { FeedEvent } from "@whisper-protocol/sdk/feed";
+import { fetchFeed } from "@whisper-protocol/sdk/feed";
+import type { RegistryEntry } from "@whisper-protocol/sdk";
+import { suiClient, whisper, PACKAGE_ID, REGISTRY_ID } from "./whisper/client";
+import { useWhisperKeys } from "./whisper/useWhisperKeys";
 import { RegistryView } from "./components/RegistryView";
 import { Feed } from "./components/Feed";
 import { Compose } from "./components/Compose";
 import { AuditToggle } from "./components/AuditToggle";
+import { IdentityBar } from "./components/IdentityBar";
 import { RawId } from "./components/RawId";
-import { fetchFeed, fetchRegistryEntries } from "./sui/queries";
-import type { FeedEvent, RegistryEntry } from "./sui/queries";
-import { PACKAGE_ID, REGISTRY_ID } from "./sui/config";
-import { usePerspective } from "./perspective/context";
 
 const POLL_INTERVAL_MS = 3000;
 
 export function App() {
-  const { perspective, identity } = usePerspective();
+  const account = useCurrentAccount();
+  const keysState = useWhisperKeys();
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [feed, setFeed] = useState<FeedEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [protocolError, setProtocolError] = useState<string | null>(null);
   const cancelled = useRef(false);
+
+  // Run the on-chain protocol_version compatibility check once at mount.
+  // Surfaces a hard error in the UI if the SDK and the deployed package
+  // disagree on wire format — better than silently posting incompatible
+  // envelopes.
+  useEffect(() => {
+    let cancelledLocal = false;
+    whisper
+      .assertProtocolCompatible()
+      .catch((e: unknown) => {
+        if (cancelledLocal) return;
+        setProtocolError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelledLocal = true;
+    };
+  }, []);
 
   useEffect(() => {
     cancelled.current = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
       try {
-        const [r, f] = await Promise.all([fetchRegistryEntries(), fetchFeed()]);
+        const [r, f] = await Promise.all([
+          whisper.fetchRegistry(),
+          fetchFeed(suiClient, { packageId: PACKAGE_ID, withGas: true }),
+        ]);
         if (cancelled.current) return;
         setRegistry(r);
         setFeed(f);
@@ -46,9 +70,6 @@ export function App() {
     };
   }, []);
 
-  const perspectiveLabel =
-    perspective === "observer" ? "OBSERVER · RANDOM ADDRESS" : `AS ${identity?.label ?? perspective.toUpperCase()}`;
-
   return (
     <div className="app">
       <header className="app-header">
@@ -57,9 +78,10 @@ export function App() {
           <AuditToggle />
         </div>
         <p className="app-sub">
-          live view of the whisper protocol — an on-chain encrypted-messaging poc on sui. switch
-          perspectives to see what each identity can read from the same public chain. flip{" "}
-          <strong>audit ids</strong> to expand every on-chain reference and copy them by clicking.
+          live view of the whisper protocol — sui-based private messaging where the chain stores
+          the ciphertext, sender, and recipient publicly, but only the addressee can read the
+          plaintext. flip <strong>audit ids</strong> to expand every on-chain reference and copy
+          them by clicking.
         </p>
         <div className="app-meta">
           <span>
@@ -68,47 +90,55 @@ export function App() {
           <span>
             <strong>registry</strong> <RawId value={REGISTRY_ID} kind="registry" />
           </span>
-          <span>
-            <strong>viewing as</strong> {perspectiveLabel}
-            {identity && (
-              <>
-                {" · "}
-                <RawId value={identity.suiAddress} kind="address" />
-              </>
-            )}
-          </span>
         </div>
       </header>
+
+      <IdentityBar registry={registry} keysState={keysState} />
+
+      {protocolError && (
+        <div className="notice" style={{ borderColor: "var(--bad)", color: "var(--bad)" }}>
+          <strong>PROTOCOL VERSION MISMATCH ·</strong> {protocolError}
+          <div style={{ marginTop: "0.5rem", color: "var(--text-faint)" }}>
+            The deployed Move package reports a different protocol_version than this SDK
+            understands. Sending or decrypting envelopes against this package may corrupt data —
+            update the SDK or point the dApp at a compatible deployment.
+          </div>
+        </div>
+      )}
 
       {err && (
         <div className="notice" style={{ borderColor: "var(--bad)", color: "var(--bad)" }}>
           <strong>RPC ERROR ·</strong> {err}
           <div style={{ marginTop: "0.5rem", color: "var(--text-faint)" }}>
-            Check that <code>sui start</code> is running on 127.0.0.1:9000 and that the configured
-            package + registry ids match the current localnet.
+            Check that the configured RPC is reachable and that the package + registry IDs match
+            the current network.
           </div>
         </div>
       )}
 
-      <PerspectiveBar />
-
-      {perspective === "observer" ? (
+      {!account ? (
         <div className="notice" style={{ marginTop: "1.5rem" }}>
-          <strong>OBSERVER MODE ·</strong> you are looking at the chain from a random address that
-          holds none of the demo key material. envelope payloads are AEAD-encrypted; you only see
-          ciphertext, sender, recipient, schema, and key version — exactly what a public indexer
-          would see.
+          <strong>OBSERVER MODE ·</strong> no wallet connected. you see only what a public indexer
+          would: ciphertext, sender, recipient, schema, and key version. connect a wallet above to
+          unlock encryption + decryption for your address.
+        </div>
+      ) : !keysState.keys ? (
+        <div className="notice" style={{ marginTop: "1.5rem" }}>
+          <strong>SIGN TO UNLOCK ·</strong> click <em>derive</em> in the bar above. your wallet
+          will sign a fixed canonical message; we feed the signature through HKDF to derive an
+          X25519 keypair. the signature itself never leaves the browser. cached in indexeddb so
+          you only sign once per device.
         </div>
       ) : (
         <div className="notice" style={{ marginTop: "1.5rem" }}>
-          <strong>AS {identity?.label} ·</strong> envelopes addressed to your account decrypt
-          locally using your X25519 key. envelopes addressed to other recipients remain
-          ciphertext — there is no on-chain access control, only cryptographic recipient binding.
+          <strong>READY ·</strong> envelopes addressed to your account decrypt locally using your
+          derived X25519 key. envelopes addressed to other recipients remain ciphertext — no
+          on-chain access control, only cryptographic recipient binding.
         </div>
       )}
 
       <div className="section">
-        <Compose registry={registry} />
+        <Compose registry={registry} keys={keysState.keys} />
       </div>
 
       <div className="section">
@@ -116,7 +146,7 @@ export function App() {
       </div>
 
       <div className="section">
-        <Feed events={feed} loading={loading} />
+        <Feed events={feed} loading={loading} keys={keysState.keys} />
       </div>
 
       <footer className="footer">
