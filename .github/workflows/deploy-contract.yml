@@ -63,7 +63,8 @@ jobs:
           curl -L --fail -o sui.tgz \
             "https://github.com/MystenLabs/sui/releases/download/$tag/sui-$tag-ubuntu-x86_64.tgz"
           mkdir -p "$HOME/.local/bin"
-          tar -xzf sui.tgz -C "$HOME/.local/bin" sui
+          # Archive entries are prefixed with `./` so the path here matters.
+          tar -xzf sui.tgz -C "$HOME/.local/bin" ./sui
           chmod +x "$HOME/.local/bin/sui"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
