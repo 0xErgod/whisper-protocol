@@ -17,3 +17,11 @@ export {
   clearCachedKeypair,
 } from "./cache.js";
 export type { CacheKeyInput } from "./cache.js";
+
+export {
+  SUI_SIGNATURE_FLAGS,
+  suiAddressFromPublicKey,
+  detectSchemeFromAccount,
+  requireEd25519,
+} from "./scheme.js";
+export type { SuiSignatureScheme } from "./scheme.js";

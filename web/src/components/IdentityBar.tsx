@@ -98,6 +98,8 @@ export function IdentityBar({ registry, keysState }: Props) {
         <span className="identity-cell-value">
           {!account ? (
             <span style={{ color: "var(--text-faint)" }}>—</span>
+          ) : keysState.schemeError ? (
+            <span className="identity-status error">unsupported wallet</span>
           ) : keysState.keys ? (
             <span className="identity-status ok">
               derived
@@ -158,6 +160,14 @@ export function IdentityBar({ registry, keysState }: Props) {
           )}
         </span>
       </div>
+
+      {keysState.schemeError && (
+        <div className="identity-toast error">
+          <strong>UNSUPPORTED WALLET</strong>
+          <span>·</span>
+          <span style={{ color: "var(--bad)" }}>{keysState.schemeError}</span>
+        </div>
+      )}
 
       {(keysState.error || regError) && (
         <div className="identity-toast error">
