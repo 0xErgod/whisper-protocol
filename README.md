@@ -1,186 +1,86 @@
-# Whisper Protocol PoC
+# Whisper Protocol
 
-Proof of concept for Whisper — Sui-based private messaging where the
-ciphertext, sender, recipient, schema, and key version are public on chain
-but the plaintext is only legible to the addressed recipient.
+Sui-based private messaging where the ciphertext, sender, recipient, schema, and key version are public on chain but the plaintext is only legible to the addressed recipient.
 
-> **Naming note.** The on-chain Move module is still `secret_sharing` and
-> the HKDF info string is still `sui-secret-sharing-poc-v1`. These are
-> wire-level identifiers — changing them requires a republish and key
-> rotation. The "Whisper" rename is a display-layer change only, so the
-> running localnet keeps working.
+This monorepo houses the Move package, the TypeScript SDK, the wallet-derivation helper, and a demo dApp.
 
-The current implementation focuses on the protocol core:
+## Layout
 
-- Ed25519 demo keys loaded from `.env`.
-- X25519 encryption keys derived from Ed25519 key material.
-- Local encrypt/decrypt CLI for Alice, Bob, and Charlie.
-- Move contract with a shared `KeyRegistry` (with monotonic key versions)
-  and `EncryptedEnvelope` transport bound to the recipient's current key.
+```
+contracts/                              # Move package — published to localnet/testnet/mainnet
+crates/secret-sharing-cli/              # Rust CLI for scripted demos (internal, not published)
+packages/
+  sdk/                                  # @whisper-protocol/sdk — encrypt, decrypt, build txs
+  wallet-derived-keys/                  # @whisper-protocol/wallet-derived-keys — wallet-signature key derivation
+web/                                    # demo dApp consuming the SDK + @mysten/dapp-kit
+networks.json                           # canonical deployment IDs per network (auto-updated by CI)
+specs/                                  # protocol design docs
+```
 
-## Setup
+The SDK and the contract version independently. The contract exposes `protocol_version()` and the SDK ships a matching `SDK_PROTOCOL_VERSION` constant; bumping either side requires a coordinated release.
 
-Start a local Sui node:
+## Quickstart (local)
 
 ```powershell
+# Start a local Sui node
 sui start --force-regenesis --with-faucet --fullnode-rpc-port 9000
-```
 
-If this runs in a separate terminal, leave it open while working against localnet.
-
-Generate local demo keys:
-
-```powershell
+# Generate demo keys (creates .env)
 cargo run -q -- generate-env
-```
 
-Copy the output into `.env`, then add:
-
-```text
-SUI_RPC_URL=http://127.0.0.1:9000
-SUI_PACKAGE_ID=<published package id>
-SUI_REGISTRY_ID=<published KeyRegistry object id>
-```
-
-Do not use real funded keys.
-
-Import the `.env` demo keys into the local Sui keystore and fund them:
-
-```powershell
+# Import + fund the demo addresses
 .\scripts\import-env-keys.ps1
 .\scripts\fund-demo-keys.ps1
-```
 
-Publish the Move package:
+# Build everything
+pnpm install
+pnpm build
 
-```powershell
+# Publish the contract (overwrite any stale Published.toml first)
 sui client publish contracts --gas-budget 200000000 --json
+# Copy packageId + KeyRegistry objectId into web env or networks.json
+
+# Run the dApp
+pnpm dev:web
 ```
 
-From the publish output's `objectChanges` array:
+## How it works
 
-- copy the `packageId` of the `published` entry into `.env` as `SUI_PACKAGE_ID`;
-- copy the `objectId` of the `created` entry whose `objectType` ends in
-  `::secret_sharing::KeyRegistry` into `.env` as `SUI_REGISTRY_ID`.
+1. **Connect a Sui wallet.** No demo seed phrase needed — the dApp uses [`@mysten/dapp-kit`](https://www.npmjs.com/package/@mysten/dapp-kit).
+2. **Sign a canonical message once per device.** The wallet's signature over a fixed, domain-separated message is run through HKDF-SHA256 to produce an X25519 encryption keypair. The signature itself never leaves the browser. See [specs/wallet-signature-derived-keys.md](specs/wallet-signature-derived-keys.md).
+3. **Register your encryption public key on the shared `KeyRegistry`.** Other senders look you up here to encrypt to your current `key_version`.
+4. **Send / receive envelopes.** Senders read your key from the registry, encrypt with X25519 + ChaCha20-Poly1305, and post the envelope on chain via `post_envelope`. The contract asserts the declared `key_version` matches your current registration; senders racing a rotation get told to retry.
 
-The `KeyRegistry` is a shared object created at publish time by the module's
-`init` function. All on-chain commands take it as an input.
+## Threat model
 
-## Local Protocol Commands
+Whisper provides:
 
-Print a character's derived public keys:
+- Payload confidentiality against public chain observers, indexers, and other users.
+- Sender-authenticated delivery via Sui transaction signing.
+- Recipient-only decryption.
 
-```powershell
-cargo run -q -- keys alice
-```
+Whisper does **not** provide:
 
-Encrypt a text secret from Alice to Bob:
+- Forward secrecy. A wallet compromise reveals every encryption key derivable under any version → every past message is decryptable.
+- Recipient anonymity. Recipient address is public on the envelope.
+- Deniability. The keypair is wallet-attributable.
+- Metadata privacy. Sender, recipient, schema, key version, sizes, and timestamps are all public.
 
-```powershell
-cargo run -q -- encrypt alice bob --text "fortress at x=42 y=9"
-```
+See [specs/](specs/) for full design notes and trade-offs.
 
-Decrypt an envelope as Bob:
+## CI/CD
 
-```powershell
-$envelope = cargo run -q -- encrypt alice bob --text "fortress at x=42 y=9"
-cargo run -q -- decrypt bob --envelope $envelope
-```
+- **`ci.yml`** — typecheck + build on every push and PR (TypeScript packages, Rust CLI, Move package).
+- **`publish-sdk.yml`** — on tag `sdk-v*` or `wallet-derived-v*`, publish to npm with provenance.
+- **`deploy-contract.yml`** — manually triggered (`workflow_dispatch`); publishes the Move package to testnet (or mainnet with explicit confirmation), captures the new IDs, opens a PR updating `networks.json`.
 
-Trying to decrypt the same envelope as Charlie should fail.
+## Specs
 
-## On-Chain Protocol Commands
+- [secret-sharing-poc-build.md](specs/secret-sharing-poc-build.md) — as-built Move contract and demo flow.
+- [wallet-bound-private-messaging.md](specs/wallet-bound-private-messaging.md) — broader protocol design with future multi-recipient envelopes.
+- [wallet-signature-derived-keys.md](specs/wallet-signature-derived-keys.md) — the wallet-signature derivation scheme used by `@whisper-protocol/wallet-derived-keys`.
+- [provable-shared-secrets-extensions.md](specs/provable-shared-secrets-extensions.md) — forward-looking commitments / openings / ZK roadmap.
 
-Register each character's derived encryption public key into the shared
-`KeyRegistry`:
+## License
 
-```powershell
-cargo run -q -- register-key alice
-cargo run -q -- register-key bob
-cargo run -q -- register-key charlie
-```
-
-Re-running `register-key` for a character rotates their key and bumps
-`key_version` (1, 2, 3, ...). Old envelopes encrypted to a previous version
-remain decryptable only with the prior key material.
-
-Send an encrypted secret on-chain. The CLI reads the recipient's current
-`key_version` from the registry, encrypts to it, and posts the envelope:
-
-```powershell
-cargo run -q -- send-secret alice bob --text "fortress at x=42 y=9"
-```
-
-Posting fails on-chain (`E_STALE_KEY_VERSION`, abort code 3) if the declared
-`key_version` doesn't match the recipient's current registry entry — so a
-sender racing a rotation will be told to retry.
-
-Read owned encrypted envelopes as a character:
-
-```powershell
-cargo run -q -- inbox bob
-cargo run -q -- inbox charlie
-```
-
-Bob can decrypt envelopes sent to Bob; Charlie sees only envelopes he owns.
-Any envelope encrypted with a key the recipient no longer holds shows as
-`<locked>`. Recipients can clean those up with the contract's
-`delete_envelope` entry function.
-
-## Move Contract
-
-The Move package lives in `contracts/`.
-
-Core types:
-
-- `KeyRegistry` — shared object, created at publish; holds a
-  `Table<address, KeyEntry>` of every account's current encryption key.
-- `KeyEntry` — `encryption_scheme`, `encryption_pubkey`, monotonic
-  `key_version`, `rotated_at_ms`.
-- `EncryptedEnvelope` — owned object, transferred to the recipient address.
-  Carries opaque `ciphertext` plus `eph_pubkey`, `nonce`, `key_version`, and
-  an optional opaque `context: vector<u8>` indexer tag.
-- `PublicNote` — separate broadcast primitive; not part of the encrypted
-  transport core.
-
-Entry functions:
-
-- `register_encryption_key(&mut KeyRegistry, scheme, pubkey, &Clock)` —
-  insert on first call, overwrite + bump `key_version` on subsequent calls.
-- `post_envelope(&KeyRegistry, recipient, context, schema, key_version,
-  eph_pubkey, nonce, ciphertext, &Clock)` — asserts the declared
-  `key_version` equals the recipient's current registry entry, then transfers
-  an `EncryptedEnvelope` to the recipient.
-- `delete_envelope(EncryptedEnvelope)` — owner-only via Sui object
-  ownership.
-- `post_public_note(context, text, &Clock)`.
-
-Public accessors `current_key`, `key_version_of`, `encryption_pubkey_of`,
-`encryption_scheme_of` let downstream modules read registry state inside a
-PTB.
-
-The contract stores ciphertext and emits events; it never inspects plaintext
-or the `context` tag. Membership/scoping/gating live (or will live) in
-optional modules layered on top of this core.
-
-## Verification
-
-Rust protocol CLI:
-
-```powershell
-cargo check
-```
-
-Move package:
-
-```powershell
-sui move build --path contracts
-```
-
-The `contracts/Move.toml` localnet environment must match the active local chain identifier. If localnet is regenerated, refresh it with:
-
-```powershell
-sui client chain-identifier
-```
-
-Then update the `[environments] localnet = "..."` value in `contracts/Move.toml`.
+MIT.
