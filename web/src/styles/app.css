@@ -88,49 +88,83 @@
   text-transform: none;
 }
 
-/* Perspective bar */
-.perspective-bar {
-  display: flex;
-  gap: 0;
+/* Identity bar (replaces perspective bar) */
+.identity-bar {
   border: 1px solid var(--border);
   background: var(--bg-elevated);
+  padding: 0.6rem 1ch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
 
-.perspective-bar button {
-  flex: 1;
-  border: none;
-  border-right: 1px solid var(--border);
-  padding: 0.55rem 1ch;
-  background: transparent;
-  color: var(--text-dim);
-  letter-spacing: 0.2ch;
-  text-transform: uppercase;
+.identity-bar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.5ch;
   font-size: 0.85rem;
 }
 
-.perspective-bar button:last-child {
+.identity-bar-detail {
+  border-top: 1px dotted var(--border);
+  padding-top: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.identity-bar-section {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75ch;
+  border-right: 1px dotted var(--border);
+  padding-right: 1.5ch;
+}
+
+.identity-bar-section:last-child {
   border-right: none;
 }
 
-.perspective-bar button:hover {
-  background: var(--gray-15);
-  color: var(--text);
+.identity-label {
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  letter-spacing: 0.2ch;
+  text-transform: uppercase;
 }
 
-.perspective-bar button[aria-pressed="true"] {
+.identity-status {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.identity-status.ok {
+  color: var(--ok);
+}
+
+.identity-status.error {
+  color: var(--bad);
+}
+
+.identity-action {
+  font-size: 0.75rem;
+  letter-spacing: 0.15ch;
+  text-transform: uppercase;
+  padding: 0.3rem 1ch;
+  border: 1px solid var(--brand-dim);
+  background: transparent;
+  color: var(--brand);
+}
+
+.identity-action:hover:not(:disabled) {
   background: var(--brand);
   color: var(--gray-3);
+  border-color: var(--brand);
 }
 
-.perspective-bar .perspective-label {
-  display: block;
-  font-size: 0.7rem;
-  color: inherit;
-  opacity: 0.7;
-}
-
-.perspective-bar button[aria-pressed="true"] .perspective-label {
-  opacity: 0.9;
+.identity-action:disabled {
+  border-color: var(--border);
+  color: var(--text-faint);
+  cursor: not-allowed;
 }
 
 /* Window/card */
