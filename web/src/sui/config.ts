@@ -6,10 +6,10 @@ export const SUI_RPC_URL = (env.VITE_SUI_RPC_URL as string | undefined) ?? "/sui
 
 export const PACKAGE_ID =
   (env.VITE_PACKAGE_ID as string | undefined) ??
-  "0xead06c3c0c144bafbdff29b17cdf02df0d6ac7f26d36c2e55e3961dea4d12d25";
+  "0x3583393a1c4b043c154b8cef883073bd854a7c1c61dc73eb0ea867aa513d6578";
 
 export const REGISTRY_ID =
   (env.VITE_REGISTRY_ID as string | undefined) ??
-  "0xcb55e890f217540285ceac17b154118652512889159e0e3f8428688c903f6dee";
+  "0x0e7d57899476e92ffa2a822e050bdf4f54a7855448eb6044c221a6977961099e";
 
 export const MODULE = "secret_sharing";
