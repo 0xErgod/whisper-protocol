@@ -10,6 +10,13 @@ const E_TOO_LARGE: u64 = 1;
 const E_RECIPIENT_NOT_REGISTERED: u64 = 2;
 const E_STALE_KEY_VERSION: u64 = 3;
 
+// Wire-protocol version. Bump on any change that breaks SDK
+// compatibility (event field additions/renames, function signature
+// changes, derivation/AEAD parameter changes). The SDK reads this via
+// `protocol_version()` on first use and refuses to talk to an
+// unfamiliar registry.
+const PROTOCOL_VERSION: u32 = 1;
+
 const MAX_SCHEME_BYTES: u64 = 64;
 const MAX_SCHEMA_BYTES: u64 = 64;
 const MAX_CONTEXT_BYTES: u64 = 64;
@@ -88,6 +95,8 @@ entry fun register_encryption_key(
         rotated_at_ms: now,
     });
 }
+
+public fun protocol_version(): u32 { PROTOCOL_VERSION }
 
 public fun current_key(registry: &KeyRegistry, who: address): &KeyEntry {
     assert!(registry.entries.contains(who), E_RECIPIENT_NOT_REGISTERED);
