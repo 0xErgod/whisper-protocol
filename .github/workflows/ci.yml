@@ -15,9 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Don't pass `version:` here — package.json's "packageManager" field
+      # already pins pnpm@8.15.8, and pnpm/action-setup@v4 errors out if
+      # both are specified.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 8
 
       - uses: actions/setup-node@v4
         with:
@@ -59,10 +60,20 @@ jobs:
       - name: install sui cli
         run: |
           set -euo pipefail
-          # Use the latest mainnet release of sui — small enough to install
-          # on every CI run; cache later if it becomes a bottleneck.
+          # Pull the latest mainnet release tarball at runtime so we don't
+          # have to bump a version pin every couple weeks.
+          tag=$(curl -sL --fail \
+            "https://api.github.com/repos/MystenLabs/sui/releases?per_page=30" \
+            | grep '"tag_name":' \
+            | grep -oE 'mainnet-v[0-9.]+' \
+            | head -1)
+          if [ -z "$tag" ]; then
+            echo "::error::could not resolve latest sui mainnet release tag"
+            exit 1
+          fi
+          echo "Using sui release: $tag"
           curl -L --fail -o sui.tgz \
-            https://github.com/MystenLabs/sui/releases/download/mainnet-v1.38.0/sui-mainnet-v1.38.0-ubuntu-x86_64.tgz
+            "https://github.com/MystenLabs/sui/releases/download/$tag/sui-$tag-ubuntu-x86_64.tgz"
           mkdir -p "$HOME/.local/bin"
           tar -xzf sui.tgz -C "$HOME/.local/bin" sui
           chmod +x "$HOME/.local/bin/sui"
