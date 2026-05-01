@@ -88,49 +88,193 @@
   text-transform: none;
 }
 
-/* Perspective bar */
-.perspective-bar {
-  display: flex;
-  gap: 0;
+/* Identity bar (replaces perspective bar) */
+.identity-bar {
   border: 1px solid var(--border);
   background: var(--bg-elevated);
+  padding: 0.85rem 1.5ch;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20ch, 1fr));
+  gap: 0.85rem 2ch;
 }
 
-.perspective-bar button {
-  flex: 1;
-  border: none;
-  border-right: 1px solid var(--border);
-  padding: 0.55rem 1ch;
-  background: transparent;
-  color: var(--text-dim);
-  letter-spacing: 0.2ch;
-  text-transform: uppercase;
+.identity-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.identity-cell-value {
   font-size: 0.85rem;
+  line-height: 1.3;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75ch;
+  min-height: 1.7rem;
 }
 
-.perspective-bar button:last-child {
-  border-right: none;
+.identity-label {
+  font-size: 0.68rem;
+  color: var(--text-faint);
+  letter-spacing: 0.25ch;
+  text-transform: uppercase;
 }
 
-.perspective-bar button:hover {
-  background: var(--gray-15);
-  color: var(--text);
+.identity-status {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5ch;
 }
 
-.perspective-bar button[aria-pressed="true"] {
+.identity-status.ok {
+  color: var(--ok);
+}
+
+.identity-status.error {
+  color: var(--bad);
+}
+
+.identity-status .identity-sep {
+  color: var(--text-faint);
+}
+
+.identity-action {
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.18ch;
+  text-transform: uppercase;
+  padding: 0.35rem 1.2ch;
+  border: 1px solid var(--brand);
+  background: transparent;
+  color: var(--brand);
+  cursor: pointer;
+  transition: background 80ms linear, color 80ms linear;
+}
+
+.identity-action:hover:not(:disabled) {
   background: var(--brand);
   color: var(--gray-3);
 }
 
-.perspective-bar .perspective-label {
-  display: block;
-  font-size: 0.7rem;
-  color: inherit;
-  opacity: 0.7;
+.identity-action:disabled {
+  border-color: var(--border);
+  color: var(--text-faint);
+  cursor: not-allowed;
 }
 
-.perspective-bar button[aria-pressed="true"] .perspective-label {
-  opacity: 0.9;
+/* Full-width footer rows under the identity grid */
+.identity-bar-foot {
+  grid-column: 1 / -1;
+  border-top: 1px dotted var(--border);
+  padding-top: 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 2ch;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.identity-bar-foot .identity-foot-spacer {
+  flex: 1 1 auto;
+}
+
+.identity-bar-foot .identity-foot-scheme {
+  color: var(--text-faint);
+  letter-spacing: 0.05ch;
+}
+
+/* Toast-style success line for the latest registration tx */
+.identity-toast {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.75ch;
+  font-size: 0.78rem;
+  color: var(--ok);
+  border: 1px dotted rgba(85, 255, 85, 0.5);
+  padding: 0.35rem 1ch;
+  background: rgba(85, 255, 85, 0.04);
+}
+
+.identity-toast.error {
+  color: var(--bad);
+  border-color: rgba(255, 85, 85, 0.5);
+  background: rgba(255, 85, 85, 0.04);
+}
+
+/* dApp Kit theming via WalletProvider's `theme` prop carries most of
+ * the work. These rules add the lower-priority finishing touches
+ * the theme contract doesn't expose directly:
+ *   - tighter button padding (default LG is 16px 24px),
+ *   - mono font on all dapp-kit text (Text component overrides the
+ *     theme fontFamily with its own default),
+ *   - uppercase labels for visual continuity with the rest of the bar.
+ */
+
+/* dapp-kit applies the `data-dapp-kit` attribute directly on its own
+ * elements (button, dropdown content, etc.) — not on a wrapper. Targeting
+ * the bare class names matches both `[data-dapp-kit].Foo` and
+ * `[data-dapp-kit] .Foo` instances. !important is required because
+ * dapp-kit's own rules win specificity ties via injection order. */
+
+.Button_buttonVariants__x1s81q0 {
+  text-transform: uppercase !important;
+  font-family: var(--font-mono) !important;
+}
+
+.Button_buttonVariants_size_lg__x1s81q4,
+.Button_buttonVariants_size_md__x1s81q3 {
+  padding: 0.3rem 1.2ch !important;
+  letter-spacing: 0.15ch !important;
+  min-height: 0 !important;
+  line-height: 1.2 !important;
+  font-size: 0.85rem !important;
+}
+
+.AccountDropdownMenu_connectedAccount__div2ql0 {
+  letter-spacing: 0.15ch !important;
+  gap: 0.5ch !important;
+}
+
+/* dapp-kit ships a 16x16 chevron icon inside the connected-account
+ * button. Shrink it so the pill height matches the rest of the bar. */
+.AccountDropdownMenu_connectedAccount__div2ql0 svg {
+  width: 0.85em !important;
+  height: 0.85em !important;
+}
+
+/* Dropdown panel + items: tighter padding so the menu reads as a
+ * compact list rather than a chunky overlay. */
+.AccountDropdownMenu_menuContent__div2ql2 {
+  padding: 0.3rem !important;
+  gap: 0 !important;
+  width: auto !important;
+  min-width: 14ch !important;
+  font-family: var(--font-mono) !important;
+}
+
+.AccountDropdownMenu_menuContent__div2ql2 * {
+  font-family: var(--font-mono) !important;
+}
+
+.AccountDropdownMenu_menuItem__div2ql3 {
+  padding: 0.35rem 0.8ch !important;
+  font-size: 0.8rem !important;
+  letter-spacing: 0.05ch !important;
+  cursor: pointer !important;
+}
+
+/* When highlighted dapp-kit paints the row with our primary-button bg
+ * (brand orange) — flip text dark for readability, including all
+ * descendants (the address Text and checkmark have their own colors
+ * set so they need to be overridden too). */
+.AccountDropdownMenu_menuItem__div2ql3[data-highlighted],
+.AccountDropdownMenu_menuItem__div2ql3[data-highlighted] * {
+  color: var(--gray-3) !important;
 }
 
 /* Window/card */

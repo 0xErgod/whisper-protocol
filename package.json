@@ -1,0 +1,23 @@
+{
+  "name": "whisper-protocol",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Whisper Protocol — Sui-based private messaging. Monorepo root.",
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/*\" run build",
+    "build:all": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "dev:web": "pnpm --filter whisper-web run dev",
+    "test": "pnpm -r run test"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=8"
+  },
+  "packageManager": "pnpm@8.15.8",
+  "pnpm": {
+    "overrides": {
+      "@mysten/sui": "1.38.0"
+    }
+  }
+}

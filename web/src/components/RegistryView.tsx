@@ -1,7 +1,6 @@
 import { bytesToHex } from "@noble/hashes/utils";
-import { labelForAddress, normalizeAddress } from "../crypto/identities";
-import type { RegistryEntry } from "../sui/queries";
-import { usePerspective } from "../perspective/context";
+import { useCurrentAccount } from "@mysten/dapp-kit";
+import { normalizeAddress, type RegistryEntry } from "@whisper-protocol/sdk";
 import { RawId } from "./RawId";
 import { useAudit } from "../perspective/audit";
 
@@ -17,9 +16,9 @@ function formatTime(ms: number): string {
 }
 
 export function RegistryView({ entries, loading }: Props) {
-  const { identity } = usePerspective();
+  const account = useCurrentAccount();
   const { rawIds } = useAudit();
-  const youAddress = identity ? normalizeAddress(identity.suiAddress) : null;
+  const youAddress = account ? normalizeAddress(account.address) : null;
   return (
     <div className="window">
       <div className="window-header">
@@ -47,13 +46,8 @@ export function RegistryView({ entries, loading }: Props) {
                 return (
                   <tr key={e.account} className={isYou ? "you-row" : undefined}>
                     <td>
-                      <span className={isYou ? "address you" : "address-known"}>
-                        {labelForAddress(e.account)}
-                      </span>
+                      <RawId value={e.account} kind="address" />
                       {isYou && <span className="you-tag">YOU</span>}
-                      <div style={{ color: "var(--text-faint)", fontSize: "0.75rem" }}>
-                        <RawId value={e.account} kind="address" />
-                      </div>
                     </td>
                     <td style={{ color: "var(--text-dim)" }}>{e.encryptionScheme}</td>
                     <td className="mono-trunc" style={{ color: "var(--text-dim)" }}>

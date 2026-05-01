@@ -1,31 +1,36 @@
 import { useMemo, useState } from "react";
-import { Transaction } from "@mysten/sui/transactions";
-import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import {
+  useCurrentAccount,
+  useSignAndExecuteTransaction,
+} from "@mysten/dapp-kit";
 import { bytesToHex } from "@noble/hashes/utils";
-import { client } from "../sui/client";
-import { MODULE, PACKAGE_ID, REGISTRY_ID } from "../sui/config";
-import type { RegistryEntry } from "../sui/queries";
-import { usePerspective } from "../perspective/context";
-import { IDENTITIES, normalizeAddress } from "../crypto/identities";
-import type { CharacterName, Identity } from "../crypto/identities";
-import { encryptForRecipient } from "../crypto/encrypt";
+import {
+  MODULE,
+  normalizeAddress,
+  type RegistryEntry,
+} from "@whisper-protocol/sdk";
+import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
+import { whisper, PACKAGE_ID, REGISTRY_ID, ACTIVE_CHAIN } from "../whisper/client";
+import { suiClient } from "../whisper/client";
 import { RawId } from "./RawId";
-import { formatMist } from "../sui/gas";
-import type { GasInfo } from "../sui/queries";
+import { formatMist } from "../whisper/gas";
 
 interface Props {
   registry: RegistryEntry[];
+  keys: DerivedEncryptionKeypair | null;
 }
 
-const CLOCK_ID = "0x6";
-const SCHEMA = "text_secret_v1";
-const RECIPIENT_OPTIONS: CharacterName[] = ["alice", "bob", "charlie"];
+interface GasInfo {
+  computationMist: bigint;
+  storageMist: bigint;
+  rebateMist: bigint;
+  netMist: bigint;
+}
 
 interface Receipt {
   txDigest: string;
   envelopeId: string | null;
   recipient: string;
-  recipientLabel: string;
   keyVersion: number;
   ephPubkeyHex: string;
   nonceHex: string;
@@ -42,9 +47,11 @@ interface Receipt {
   gas: GasInfo | null;
 }
 
-function gasFromEffects(result: unknown): GasInfo | null {
-  const summary = (result as { effects?: { gasUsed?: { computationCost?: string; storageCost?: string; storageRebate?: string } } } | undefined)
-    ?.effects?.gasUsed;
+function gasFromEffects(summary: {
+  computationCost?: string;
+  storageCost?: string;
+  storageRebate?: string;
+} | undefined): GasInfo | null {
   if (!summary) return null;
   const computation = BigInt(summary.computationCost ?? "0");
   const storage = BigInt(summary.storageCost ?? "0");
@@ -57,69 +64,69 @@ function gasFromEffects(result: unknown): GasInfo | null {
   };
 }
 
-function signerFor(identity: Identity): Ed25519Keypair {
-  return Ed25519Keypair.fromSecretKey(identity.ed25519PrivateKey);
-}
-
-function findCreatedEnvelope(effects: unknown, packageId: string): string | null {
-  // SuiTransactionBlockResponse.objectChanges entries with type=created and matching type.
-  const changes = (effects as { objectChanges?: Array<Record<string, unknown>> } | undefined)
-    ?.objectChanges;
-  if (!changes) return null;
-  const target = `${packageId}::${MODULE}::EncryptedEnvelope`;
-  for (const change of changes) {
-    if (change.type === "created" && change.objectType === target) {
-      return String(change.objectId ?? "") || null;
-    }
-  }
-  return null;
-}
-
-export function Compose({ registry }: Props) {
-  const { perspective, identity } = usePerspective();
-  const [recipient, setRecipient] = useState<CharacterName>("bob");
+export function Compose({ registry, keys }: Props) {
+  const account = useCurrentAccount();
+  const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+  const [recipient, setRecipient] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
 
-  const validRecipients = useMemo(
-    () => RECIPIENT_OPTIONS.filter((r) => r !== perspective),
-    [perspective],
-  );
+  const validRecipientEntry = useMemo<RegistryEntry | null>(() => {
+    if (!recipient || !recipient.startsWith("0x")) return null;
+    const norm = normalizeAddress(recipient);
+    return registry.find((e) => e.account === norm) ?? null;
+  }, [recipient, registry]);
 
-  // Auto-correct recipient if user changed perspective.
-  if (!validRecipients.includes(recipient) && validRecipients.length > 0) {
-    setRecipient(validRecipients[0]);
-  }
+  const isOwnAddress = useMemo(() => {
+    if (!account || !recipient) return false;
+    return normalizeAddress(account.address) === normalizeAddress(recipient);
+  }, [account, recipient]);
 
-  if (perspective === "observer" || !identity) {
+  if (!account) {
     return (
       <div className="window compose-window">
         <div className="window-header">
           <span>COMPOSE · LOCKED</span>
-          <span>SWITCH POV</span>
+          <span>CONNECT WALLET</span>
         </div>
         <div className="window-body">
           <div className="feed-empty" style={{ padding: "1rem 1ch" }}>
-            you are in observer mode. switch to alice / bob / charlie above to send a secret on
-            their behalf.
+            connect a sui wallet (top-right) to send a secret on-chain.
           </div>
         </div>
       </div>
     );
   }
 
-  const recipientIdentity = IDENTITIES[recipient];
-  const recipientAddrNorm = normalizeAddress(recipientIdentity.suiAddress);
-  const recipientEntry = registry.find((e) => e.account === recipientAddrNorm);
+  if (!keys) {
+    return (
+      <div className="window compose-window">
+        <div className="window-header">
+          <span>COMPOSE · KEYS NOT DERIVED</span>
+          <span>SIGN TO UNLOCK</span>
+        </div>
+        <div className="window-body">
+          <div className="feed-empty" style={{ padding: "1rem 1ch" }}>
+            you need to derive your encryption keypair first. sign the canonical
+            message in the bar above.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
-    if (!identity) return;
-    if (!recipientEntry) {
+    if (!account || !keys) return;
+    if (isOwnAddress) {
+      setErr("cannot send to your own address.");
+      return;
+    }
+    if (!validRecipientEntry) {
       setErr(
-        `recipient ${recipientIdentity.label} has no key registered yet. run \`cargo run -- register-key ${recipient}\` and retry.`,
+        `recipient ${normalizeAddress(recipient)} has no registry entry. they must call register_encryption_key first.`,
       );
       return;
     }
@@ -132,65 +139,55 @@ export function Compose({ registry }: Props) {
     setReceipt(null);
 
     try {
-      const payload = encryptForRecipient(
-        identity,
-        recipientEntry.encryptionPubkey,
-        recipientIdentity.suiAddress,
-        text,
-      );
-
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${PACKAGE_ID}::${MODULE}::post_envelope`,
-        arguments: [
-          tx.object(REGISTRY_ID),
-          tx.pure.address(recipientIdentity.suiAddress),
-          tx.pure.vector("u8", []),
-          tx.pure.vector("u8", Array.from(new TextEncoder().encode(SCHEMA))),
-          tx.pure.u64(BigInt(recipientEntry.keyVersion)),
-          tx.pure.vector("u8", Array.from(payload.ephPubkey)),
-          tx.pure.vector("u8", Array.from(payload.nonce)),
-          tx.pure.vector("u8", Array.from(payload.ciphertext)),
-          tx.object(CLOCK_ID),
-        ],
+      const prepared = await whisper.prepareSend({
+        senderAddress: account.address,
+        recipientAddress: recipient,
+        plaintext: text,
       });
 
-      const signer = signerFor(identity);
-      tx.setSender(identity.suiAddress);
-      const result = await client.signAndExecuteTransaction({
-        transaction: tx,
-        signer,
+      const result = await signAndExecute({ transaction: prepared.tx, chain: ACTIVE_CHAIN });
+
+      // dapp-kit's default execute path returns digest + raw effects only;
+      // pull full effects via the SuiClient for receipt details.
+      const full = await suiClient.waitForTransaction({
+        digest: result.digest,
         options: { showObjectChanges: true, showEffects: true },
       });
 
-      const status =
-        (result.effects?.status as { status?: string; error?: string } | undefined)?.status ??
-        "unknown";
+      const status = (full.effects?.status as { status?: string; error?: string } | undefined)
+        ?.status ?? "unknown";
       if (status !== "success") {
-        const errText = (result.effects?.status as { error?: string } | undefined)?.error;
+        const errText = (full.effects?.status as { error?: string } | undefined)?.error;
         throw new Error(`tx failed (${status})${errText ? `: ${errText}` : ""}`);
       }
 
-      const envelopeId = findCreatedEnvelope(result, PACKAGE_ID);
+      let envelopeId: string | null = null;
+      const target = `${PACKAGE_ID}::${MODULE}::EncryptedEnvelope`;
+      for (const change of full.objectChanges ?? []) {
+        if (change.type === "created" && (change as { objectType?: string }).objectType === target) {
+          envelopeId = (change as { objectId?: string }).objectId ?? null;
+          break;
+        }
+      }
+
       setReceipt({
-        txDigest: result.digest,
+        txDigest: full.digest,
         envelopeId,
-        recipient: recipientIdentity.suiAddress,
-        recipientLabel: recipientIdentity.label,
-        keyVersion: recipientEntry.keyVersion,
-        ephPubkeyHex: bytesToHex(payload.ephPubkey),
-        nonceHex: bytesToHex(payload.nonce),
-        ciphertextHex: bytesToHex(payload.ciphertext),
-        ciphertextBytes: payload.ciphertext.length,
+        recipient: prepared.recipient.account,
+        keyVersion: prepared.keyVersion,
+        ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
+        nonceHex: bytesToHex(prepared.payload.nonce),
+        ciphertextHex: bytesToHex(prepared.payload.ciphertext),
+        ciphertextBytes: prepared.payload.ciphertext.length,
         plaintextBytes: new TextEncoder().encode(text).length,
-        schema: SCHEMA,
-        scheme: payload.encryptionScheme,
-        senderAddress: identity.suiAddress,
+        schema: "text_secret_v1",
+        scheme: prepared.payload.encryptionScheme,
+        senderAddress: account.address,
         package: PACKAGE_ID,
         registry: REGISTRY_ID,
         module: MODULE,
         function: "post_envelope",
-        gas: gasFromEffects(result),
+        gas: gasFromEffects(full.effects?.gasUsed),
       });
       setText("");
     } catch (e2) {
@@ -204,25 +201,23 @@ export function Compose({ registry }: Props) {
     <div className="window compose-window">
       <div className="window-header">
         <span>
-          COMPOSE · AS {identity.label}
+          COMPOSE · AS <RawId value={account.address} kind="address" />
         </span>
         <span>POST_ENVELOPE</span>
       </div>
       <div className="window-body">
         <form className="compose" onSubmit={send}>
           <label htmlFor="compose-recipient">to</label>
-          <select
+          <input
             id="compose-recipient"
+            type="text"
+            placeholder="0x… recipient sui address"
             value={recipient}
-            onChange={(e) => setRecipient(e.target.value as CharacterName)}
+            onChange={(e) => setRecipient(e.target.value.trim())}
             disabled={busy}
-          >
-            {validRecipients.map((r) => (
-              <option key={r} value={r}>
-                {IDENTITIES[r].label}
-              </option>
-            ))}
-          </select>
+            spellCheck={false}
+            style={{ minWidth: "44ch" }}
+          />
           <label htmlFor="compose-text" className="sr-only">
             secret
           </label>
@@ -235,19 +230,28 @@ export function Compose({ registry }: Props) {
             disabled={busy}
             maxLength={500}
           />
-          <button type="submit" disabled={busy || !text.trim() || !recipientEntry}>
+          <button
+            type="submit"
+            disabled={busy || !text.trim() || !validRecipientEntry || isOwnAddress}
+          >
             {busy ? "sending…" : "send"}
           </button>
 
           <div className="compose-status">
-            {recipientEntry ? (
+            {!recipient ? (
+              <>enter a recipient sui address.</>
+            ) : isOwnAddress ? (
+              <span className="compose-status error">
+                cannot send to your own address.
+              </span>
+            ) : validRecipientEntry ? (
               <>
-                will encrypt to <RawId value={recipientAddrNorm} kind="address" resolveLabel /> ·{" "}
-                key v{recipientEntry.keyVersion} · scheme {recipientEntry.encryptionScheme}
+                will encrypt to <RawId value={validRecipientEntry.account} kind="address" /> ·{" "}
+                key v{validRecipientEntry.keyVersion} · scheme {validRecipientEntry.encryptionScheme}
               </>
             ) : (
               <span className="compose-status error">
-                no registry entry for {recipientIdentity.label}.
+                no registry entry for this address. ask them to register first.
               </span>
             )}
           </div>
@@ -283,12 +287,11 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         </dd>
         <dt>sender</dt>
         <dd>
-          <RawId value={receipt.senderAddress} kind="address" resolveLabel /> ·{" "}
           <RawId value={receipt.senderAddress} kind="address" forceRaw />
         </dd>
         <dt>recipient</dt>
         <dd>
-          {receipt.recipientLabel} · <RawId value={receipt.recipient} kind="address" forceRaw />
+          <RawId value={receipt.recipient} kind="address" forceRaw />
         </dd>
         <dt>move call</dt>
         <dd>
@@ -301,6 +304,14 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         </dd>
         <dt>declared key_version</dt>
         <dd>v{receipt.keyVersion} (asserted on-chain against current registry)</dd>
+        <dt>schema</dt>
+        <dd>{receipt.schema}</dd>
+        <dt>scheme</dt>
+        <dd style={{ color: "var(--text-dim)" }}>{receipt.scheme}</dd>
+        <dt>plaintext bytes</dt>
+        <dd>
+          {receipt.plaintextBytes} → {receipt.ciphertextBytes} bytes ciphertext (+16-byte AEAD tag)
+        </dd>
         <dt>gas</dt>
         <dd>
           {receipt.gas ? (
@@ -317,14 +328,6 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
           ) : (
             <span style={{ color: "var(--text-faint)" }}>not reported</span>
           )}
-        </dd>
-        <dt>schema</dt>
-        <dd>{receipt.schema}</dd>
-        <dt>scheme</dt>
-        <dd style={{ color: "var(--text-dim)" }}>{receipt.scheme}</dd>
-        <dt>plaintext bytes</dt>
-        <dd>
-          {receipt.plaintextBytes} → {receipt.ciphertextBytes} bytes ciphertext (+16-byte AEAD tag)
         </dd>
         <dt>ephemeral pubkey</dt>
         <dd>
