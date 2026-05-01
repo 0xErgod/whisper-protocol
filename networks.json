@@ -1,0 +1,33 @@
+{
+  "$schema": "./networks.schema.json",
+  "comment": "Canonical Whisper Protocol deployment IDs per network. Machine-readable so CI can update it without reformatting tricks. Each entry is the latest published deployment; older deployments are retained in git history.",
+  "networks": {
+    "localnet": {
+      "rpcUrl": "http://127.0.0.1:9000",
+      "packageId": "0x3583393a1c4b043c154b8cef883073bd854a7c1c61dc73eb0ea867aa513d6578",
+      "registryId": "0x0e7d57899476e92ffa2a822e050bdf4f54a7855448eb6044c221a6977961099e",
+      "deployedAtMs": 0,
+      "deployer": null,
+      "txDigest": null,
+      "note": "Republish on each `sui start --force-regenesis` — IDs here are local-only and not authoritative."
+    },
+    "testnet": {
+      "rpcUrl": "https://fullnode.testnet.sui.io:443",
+      "packageId": null,
+      "registryId": null,
+      "deployedAtMs": null,
+      "deployer": null,
+      "txDigest": null,
+      "note": "Populated by .github/workflows/deploy-contract.yml on tag contract-v*."
+    },
+    "mainnet": {
+      "rpcUrl": "https://fullnode.mainnet.sui.io:443",
+      "packageId": null,
+      "registryId": null,
+      "deployedAtMs": null,
+      "deployer": null,
+      "txDigest": null,
+      "note": "Mainnet deploys are not automated. Populate manually with checklist."
+    }
+  }
+}
