@@ -20,6 +20,8 @@ export type { RegistryEntry } from "./registry.js";
 export { fetchEnvelope, fetchInbox } from "./envelope.js";
 export type { OnChainEnvelope } from "./envelope.js";
 
+export { readOnChainProtocolVersion } from "./protocol.js";
+
 export { normalizeAddress, shortAddress } from "./address.js";
 
 export {

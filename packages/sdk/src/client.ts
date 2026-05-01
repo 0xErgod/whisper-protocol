@@ -14,6 +14,7 @@ import { fetchEnvelope, fetchInbox } from "./envelope.js";
 import type { OnChainEnvelope } from "./envelope.js";
 import { normalizeAddress } from "./address.js";
 import { SDK_PROTOCOL_VERSION } from "./constants.js";
+import { readOnChainProtocolVersion } from "./protocol.js";
 
 export interface WhisperClientConfig {
   suiClient: SuiClient;
@@ -58,11 +59,56 @@ export class WhisperClient {
   readonly registryId: string;
   readonly expectedProtocolVersion: number;
 
+  // Memoised result of the on-chain protocol_version() view call. Cached
+  // for the lifetime of the client — package id is immutable, so the
+  // version can't change under us.
+  private _onChainProtocolVersion: number | null = null;
+  private _protocolCheckPromise: Promise<number> | null = null;
+
   constructor(config: WhisperClientConfig) {
     this.suiClient = config.suiClient;
     this.packageId = config.packageId;
     this.registryId = config.registryId;
     this.expectedProtocolVersion = config.protocolVersion ?? SDK_PROTOCOL_VERSION;
+  }
+
+  /**
+   * Read the deployed Move module's `protocol_version()` and assert it
+   * matches `expectedProtocolVersion`. Cached after the first call.
+   *
+   * Throws if the deployed module reports a different version than the
+   * SDK was built for, or if the deployed package predates the
+   * protocol_version function (pre-SDK-compat deployments). Callers
+   * should run this once at startup before any send/decrypt work to
+   * avoid silently posting envelopes against an incompatible registry.
+   */
+  async assertProtocolCompatible(): Promise<number> {
+    if (this._onChainProtocolVersion !== null) {
+      return this._onChainProtocolVersion;
+    }
+    if (this._protocolCheckPromise !== null) {
+      return this._protocolCheckPromise;
+    }
+    this._protocolCheckPromise = (async () => {
+      const onChain = await readOnChainProtocolVersion(this.suiClient, this.packageId);
+      if (onChain !== this.expectedProtocolVersion) {
+        throw new Error(
+          `Whisper protocol version mismatch: deployed package ${this.packageId} reports protocol_version=${onChain}, but this SDK was built for ${this.expectedProtocolVersion}. Upgrade the SDK (or downgrade the package) before continuing — wire formats may differ.`,
+        );
+      }
+      this._onChainProtocolVersion = onChain;
+      return onChain;
+    })();
+    try {
+      return await this._protocolCheckPromise;
+    } finally {
+      this._protocolCheckPromise = null;
+    }
+  }
+
+  /** Return the cached on-chain protocol version, or null if unchecked yet. */
+  get onChainProtocolVersion(): number | null {
+    return this._onChainProtocolVersion;
   }
 
   fetchRegistry(): Promise<RegistryEntry[]> {
