@@ -27,9 +27,8 @@ export const LOCALNET: NetworkConfig = {
 
 export const TESTNET: NetworkConfig = {
   rpcUrl: "https://fullnode.testnet.sui.io:443",
-  packageId: null,
-  registryId: null,
-  note: "Populated by deploy-contract CI workflow.",
+  packageId: "0xe95fb4727effd20883b85e724f54c74b76c8f2dc7094ded7ac6ad984443b0db5",
+  registryId: "0x5545d1505304161fd814a25635e6a9d800203b74a2ebfd8a705ac7d7e214acd2",
 };
 
 export const MAINNET: NetworkConfig = {
