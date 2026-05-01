@@ -85,6 +85,13 @@ export async function fetchRegistryEntries(): Promise<RegistryEntry[]> {
 
 export type FeedEventKind = "key" | "envelope";
 
+export interface GasInfo {
+  computationMist: bigint;
+  storageMist: bigint;
+  rebateMist: bigint;
+  netMist: bigint;
+}
+
 export interface FeedKeyEvent {
   kind: "key";
   txDigest: string;
@@ -92,6 +99,7 @@ export interface FeedKeyEvent {
   account: string;
   encryptionScheme: string;
   keyVersion: number;
+  gas: GasInfo | null;
 }
 
 export interface FeedEnvelopeEvent {
@@ -107,6 +115,7 @@ export interface FeedEnvelopeEvent {
   ephPubkey: Uint8Array;
   nonce: Uint8Array;
   ciphertext: Uint8Array;
+  gas: GasInfo | null;
 }
 
 export type FeedEvent = FeedKeyEvent | FeedEnvelopeEvent;
@@ -137,7 +146,7 @@ function bytesFromArray(input: unknown): Uint8Array {
   return new Uint8Array();
 }
 
-function parseKeyEvent(e: SuiEventEnvelope): FeedKeyEvent {
+function parseKeyEvent(e: SuiEventEnvelope, gas: Map<string, GasInfo>): FeedKeyEvent {
   const j = e.parsedJson;
   const schemeBytes = bytesFromArray(j["encryption_scheme"]);
   return {
@@ -147,12 +156,14 @@ function parseKeyEvent(e: SuiEventEnvelope): FeedKeyEvent {
     account: normalizeAddress(String(j["account"] ?? "")),
     encryptionScheme: decoder.decode(schemeBytes),
     keyVersion: Number(j["key_version"] ?? 0),
+    gas: gas.get(e.id.txDigest) ?? null,
   };
 }
 
 function parseEnvelopeEvent(
   e: SuiEventEnvelope,
   enrich: Map<string, EnvelopeFromObject>,
+  gas: Map<string, GasInfo>,
 ): FeedEnvelopeEvent {
   const j = e.parsedJson;
   const envelopeId = String(j["envelope_id"] ?? "");
@@ -172,7 +183,37 @@ function parseEnvelopeEvent(
     ephPubkey: meta?.ephPubkey ?? new Uint8Array(),
     nonce: meta?.nonce ?? new Uint8Array(),
     ciphertext: meta?.ciphertext ?? new Uint8Array(),
+    gas: gas.get(e.id.txDigest) ?? null,
   };
+}
+
+async function fetchGasForTxs(digests: string[]): Promise<Map<string, GasInfo>> {
+  const out = new Map<string, GasInfo>();
+  if (digests.length === 0) return out;
+  // Dedup digests; the JSON-RPC method has a max batch (~50 by default).
+  const unique = Array.from(new Set(digests));
+  const chunkSize = 50;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const txs = await client.multiGetTransactionBlocks({
+      digests: chunk,
+      options: { showEffects: true },
+    });
+    for (const t of txs) {
+      const summary = t.effects?.gasUsed;
+      if (!summary) continue;
+      const computation = BigInt(summary.computationCost ?? "0");
+      const storage = BigInt(summary.storageCost ?? "0");
+      const rebate = BigInt(summary.storageRebate ?? "0");
+      out.set(t.digest, {
+        computationMist: computation,
+        storageMist: storage,
+        rebateMist: rebate,
+        netMist: computation + storage - rebate,
+      });
+    }
+  }
+  return out;
 }
 
 interface EnvelopeFromObject {
@@ -224,9 +265,15 @@ export async function fetchFeed(): Promise<FeedEvent[]> {
   // returns errored entries we skip in fetchEnvelopeBodies.
   const bodies = await fetchEnvelopeBodies(envelopeIds.filter(Boolean));
 
-  const keyEvents = (keyRes.data as SuiEventEnvelope[]).map(parseKeyEvent);
+  const allDigests = [
+    ...(keyRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
+    ...(envRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
+  ];
+  const gas = await fetchGasForTxs(allDigests);
+
+  const keyEvents = (keyRes.data as SuiEventEnvelope[]).map((e) => parseKeyEvent(e, gas));
   const envelopeEvents = (envRes.data as SuiEventEnvelope[]).map((e) =>
-    parseEnvelopeEvent(e, bodies),
+    parseEnvelopeEvent(e, bodies, gas),
   );
 
   const merged: FeedEvent[] = [...keyEvents, ...envelopeEvents];

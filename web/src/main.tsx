@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { PerspectiveProvider } from "./perspective/context";
+import { AuditProvider } from "./perspective/audit";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
@@ -10,8 +11,10 @@ if (!root) throw new Error("missing #root");
 
 createRoot(root).render(
   <StrictMode>
-    <PerspectiveProvider>
-      <App />
-    </PerspectiveProvider>
+    <AuditProvider>
+      <PerspectiveProvider>
+        <App />
+      </PerspectiveProvider>
+    </AuditProvider>
   </StrictMode>,
 );
