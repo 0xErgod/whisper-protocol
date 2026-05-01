@@ -21,7 +21,25 @@ export function App() {
   const [feed, setFeed] = useState<FeedEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [protocolError, setProtocolError] = useState<string | null>(null);
   const cancelled = useRef(false);
+
+  // Run the on-chain protocol_version compatibility check once at mount.
+  // Surfaces a hard error in the UI if the SDK and the deployed package
+  // disagree on wire format — better than silently posting incompatible
+  // envelopes.
+  useEffect(() => {
+    let cancelledLocal = false;
+    whisper
+      .assertProtocolCompatible()
+      .catch((e: unknown) => {
+        if (cancelledLocal) return;
+        setProtocolError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelledLocal = true;
+    };
+  }, []);
 
   useEffect(() => {
     cancelled.current = false;
@@ -76,6 +94,17 @@ export function App() {
       </header>
 
       <IdentityBar registry={registry} keysState={keysState} />
+
+      {protocolError && (
+        <div className="notice" style={{ borderColor: "var(--bad)", color: "var(--bad)" }}>
+          <strong>PROTOCOL VERSION MISMATCH ·</strong> {protocolError}
+          <div style={{ marginTop: "0.5rem", color: "var(--text-faint)" }}>
+            The deployed Move package reports a different protocol_version than this SDK
+            understands. Sending or decrypting envelopes against this package may corrupt data —
+            update the SDK or point the dApp at a compatible deployment.
+          </div>
+        </div>
+      )}
 
       {err && (
         <div className="notice" style={{ borderColor: "var(--bad)", color: "var(--bad)" }}>
