@@ -1,14 +1,10 @@
-import type { GasInfo } from "./queries";
+import type { GasInfo } from "@whisper-protocol/sdk/feed";
 
 const MIST_PER_SUI = 1_000_000_000n;
 
 export function formatMist(mist: bigint): string {
-  // Show MIST for tiny values, SUI for everything that would round to a useful 4-decimal value.
   const abs = mist < 0n ? -mist : mist;
-  if (abs < 100_000n) {
-    return `${mist.toString()} MIST`;
-  }
-  // Format as SUI with up to 6 decimals, trimming trailing zeros.
+  if (abs < 100_000n) return `${mist.toString()} MIST`;
   const negative = mist < 0n;
   const v = negative ? -mist : mist;
   const whole = v / MIST_PER_SUI;
