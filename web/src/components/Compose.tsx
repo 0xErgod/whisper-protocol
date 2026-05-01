@@ -10,7 +10,7 @@ import {
   type RegistryEntry,
 } from "@whisper-protocol/sdk";
 import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
-import { whisper, PACKAGE_ID, REGISTRY_ID } from "../whisper/client";
+import { whisper, PACKAGE_ID, REGISTRY_ID, ACTIVE_CHAIN } from "../whisper/client";
 import { suiClient } from "../whisper/client";
 import { RawId } from "./RawId";
 import { formatMist } from "../whisper/gas";
@@ -145,7 +145,7 @@ export function Compose({ registry, keys }: Props) {
         plaintext: text,
       });
 
-      const result = await signAndExecute({ transaction: prepared.tx });
+      const result = await signAndExecute({ transaction: prepared.tx, chain: ACTIVE_CHAIN });
 
       // dapp-kit's default execute path returns digest + raw effects only;
       // pull full effects via the SuiClient for receipt details.

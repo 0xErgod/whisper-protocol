@@ -1,19 +1,23 @@
 import { SuiClient, SuiHTTPTransport } from "@mysten/sui/client";
 import { WhisperClient } from "@whisper-protocol/sdk";
+import { TESTNET } from "@whisper-protocol/sdk/networks";
 
 const env = import.meta.env;
 
-export const RPC_URL = (env.VITE_SUI_RPC_URL as string | undefined) ?? "/sui-rpc";
+// Default network is testnet so the demo works out of the box for users
+// with a wallet that supports localnet only via custom RPC. Override
+// with VITE_SUI_RPC_URL to point elsewhere.
+export const RPC_URL = (env.VITE_SUI_RPC_URL as string | undefined) ?? TESTNET.rpcUrl;
 
-// Defaults match the localnet deployment; override via Vite env vars when
-// pointing at testnet or a fresh local publish.
 export const PACKAGE_ID =
-  (env.VITE_PACKAGE_ID as string | undefined) ??
-  "0x3583393a1c4b043c154b8cef883073bd854a7c1c61dc73eb0ea867aa513d6578";
+  (env.VITE_PACKAGE_ID as string | undefined) ?? TESTNET.packageId!;
 
 export const REGISTRY_ID =
-  (env.VITE_REGISTRY_ID as string | undefined) ??
-  "0x0e7d57899476e92ffa2a822e050bdf4f54a7855448eb6044c221a6977961099e";
+  (env.VITE_REGISTRY_ID as string | undefined) ?? TESTNET.registryId!;
+
+// Wallets bind signatures to a chain identifier. The web demo targets
+// testnet by default; bump along with RPC_URL above when changing networks.
+export const ACTIVE_CHAIN = "sui:testnet" as const;
 
 export const suiClient = new SuiClient({
   transport: new SuiHTTPTransport({ url: RPC_URL }),

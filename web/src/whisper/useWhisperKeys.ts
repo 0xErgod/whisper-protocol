@@ -12,6 +12,7 @@ import type {
   DerivedEncryptionKeypair,
 } from "@whisper-protocol/wallet-derived-keys";
 import { sha256 } from "@noble/hashes/sha256";
+import { ACTIVE_CHAIN } from "./client";
 
 const SCOPE = "root";
 const VERSION = 1;
@@ -111,7 +112,10 @@ export function useWhisperKeys(): WhisperKeysState {
         return cached;
       }
       const derived = await deriveFromWalletSigner(async (bytes) => {
-        const { signature } = await signPersonalMessage({ message: bytes });
+        const { signature } = await signPersonalMessage({
+          message: bytes,
+          chain: ACTIVE_CHAIN,
+        });
         return { signature: fromBase64(signature) };
       }, message);
       await writeCachedKeypair(cacheKey, derived);

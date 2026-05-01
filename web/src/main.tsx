@@ -8,14 +8,20 @@ import {
 import { App } from "./App";
 import { AuditProvider } from "./perspective/audit";
 import { RPC_URL } from "./whisper/client";
+import { whisperTheme } from "./whisper/theme";
 import "@mysten/dapp-kit/dist/index.css";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
 const queryClient = new QueryClient();
 
+// Network alias must be one of localnet/devnet/testnet/mainnet so that
+// dApp Kit can pass `sui:<network>` as the chain identifier to wallets.
+// Switch this when pointing the dApp at a different Sui environment.
+const ACTIVE_NETWORK = "testnet" as const;
+
 const networks = {
-  whisper: { url: RPC_URL },
+  testnet: { url: RPC_URL },
 } as const;
 
 const root = document.getElementById("root");
@@ -24,8 +30,8 @@ if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <SuiClientProvider networks={networks} defaultNetwork="whisper">
-        <WalletProvider autoConnect>
+      <SuiClientProvider networks={networks} defaultNetwork={ACTIVE_NETWORK}>
+        <WalletProvider autoConnect theme={whisperTheme}>
           <AuditProvider>
             <App />
           </AuditProvider>
