@@ -17,6 +17,15 @@ dist/
 
 # Local artifacts that shouldn't ever be committed
 publish-output.json
+publish-testnet.json
+publish-mainnet.json
+
+# Playwright MCP debug session captures
+.playwright-mcp/
+
+# Loose debug screenshots (commit them to specs/ if you want to keep one)
+*.debug.png
+identity-bar-fixed.png
 
 # pnpm temp
 .pnpm-store/
