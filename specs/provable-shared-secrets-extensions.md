@@ -1,5 +1,21 @@
 # Provable Shared Secrets Extensions
 
+> **Status — fully forward-looking.** None of this is implemented in the
+> current PoC. Companion docs:
+> - [secret-sharing-poc-build.md](./secret-sharing-poc-build.md) — the
+>   as-built encrypted-transport layer this extension stacks on top of.
+> - [wallet-signature-derived-keys.md](./wallet-signature-derived-keys.md)
+>   — the wallet-signature derivation that this layer inherits without
+>   modification (commitments are independent of how encryption keys are
+>   produced).
+>
+> Receipts and openings posted across a key rotation must reference the
+> envelope's `key_version` to remain unambiguous: a commitment opening
+> shared in an envelope encrypted under v_N still verifies after the
+> recipient rotates to v_{N+1}, but only if the recipient retained the
+> v_N keypair (or can re-derive it via the wallet-signature scheme,
+> which they can).
+
 ## Goal
 
 Extend the private secret sharing protocol with ways to make public, verifiable claims about secrets without immediately revealing the secrets.
