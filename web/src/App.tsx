@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { PerspectiveBar } from "./components/PerspectiveBar";
 import { RegistryView } from "./components/RegistryView";
 import { Feed } from "./components/Feed";
+import { Compose } from "./components/Compose";
+import { AuditToggle } from "./components/AuditToggle";
+import { RawId } from "./components/RawId";
 import { fetchFeed, fetchRegistryEntries } from "./sui/queries";
 import type { FeedEvent, RegistryEntry } from "./sui/queries";
 import { PACKAGE_ID, REGISTRY_ID } from "./sui/config";
 import { usePerspective } from "./perspective/context";
-import { shortAddress } from "./crypto/identities";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -50,15 +52,31 @@ export function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title">SECRET-SHARING / OBSERVER</h1>
+        <div className="app-header-row">
+          <h1 className="app-title">WHISPER · PROTOCOL</h1>
+          <AuditToggle />
+        </div>
         <p className="app-sub">
-          live view of an on-chain encrypted-messaging poc. switch perspectives to see what each
-          identity can read from the same public chain.
+          live view of the whisper protocol — an on-chain encrypted-messaging poc on sui. switch
+          perspectives to see what each identity can read from the same public chain. flip{" "}
+          <strong>audit ids</strong> to expand every on-chain reference and copy them by clicking.
         </p>
         <div className="app-meta">
-          <span><strong>package</strong> {shortAddress(PACKAGE_ID)}</span>
-          <span><strong>registry</strong> {shortAddress(REGISTRY_ID)}</span>
-          <span><strong>viewing as</strong> {perspectiveLabel}</span>
+          <span>
+            <strong>package</strong> <RawId value={PACKAGE_ID} kind="package" />
+          </span>
+          <span>
+            <strong>registry</strong> <RawId value={REGISTRY_ID} kind="registry" />
+          </span>
+          <span>
+            <strong>viewing as</strong> {perspectiveLabel}
+            {identity && (
+              <>
+                {" · "}
+                <RawId value={identity.suiAddress} kind="address" />
+              </>
+            )}
+          </span>
         </div>
       </header>
 
@@ -90,6 +108,10 @@ export function App() {
       )}
 
       <div className="section">
+        <Compose registry={registry} />
+      </div>
+
+      <div className="section">
         <RegistryView entries={registry} loading={loading} />
       </div>
 
@@ -98,7 +120,8 @@ export function App() {
       </div>
 
       <footer className="footer">
-        package · {PACKAGE_ID} · registry · {REGISTRY_ID}
+        package · <RawId value={PACKAGE_ID} kind="package" forceRaw /> · registry ·{" "}
+        <RawId value={REGISTRY_ID} kind="registry" forceRaw />
       </footer>
     </div>
   );

@@ -1,7 +1,9 @@
 import { bytesToHex } from "@noble/hashes/utils";
-import { labelForAddress, normalizeAddress, shortAddress } from "../crypto/identities";
+import { labelForAddress, normalizeAddress } from "../crypto/identities";
 import type { RegistryEntry } from "../sui/queries";
 import { usePerspective } from "../perspective/context";
+import { RawId } from "./RawId";
+import { useAudit } from "../perspective/audit";
 
 interface Props {
   entries: RegistryEntry[];
@@ -16,6 +18,7 @@ function formatTime(ms: number): string {
 
 export function RegistryView({ entries, loading }: Props) {
   const { identity } = usePerspective();
+  const { rawIds } = useAudit();
   const youAddress = identity ? normalizeAddress(identity.suiAddress) : null;
   return (
     <div className="window">
@@ -49,12 +52,12 @@ export function RegistryView({ entries, loading }: Props) {
                       </span>
                       {isYou && <span className="you-tag">YOU</span>}
                       <div style={{ color: "var(--text-faint)", fontSize: "0.75rem" }}>
-                        {shortAddress(e.account)}
+                        <RawId value={e.account} kind="address" />
                       </div>
                     </td>
                     <td style={{ color: "var(--text-dim)" }}>{e.encryptionScheme}</td>
                     <td className="mono-trunc" style={{ color: "var(--text-dim)" }}>
-                      {pubHex.slice(0, 8)}…{pubHex.slice(-8)}
+                      {rawIds ? pubHex : `${pubHex.slice(0, 8)}…${pubHex.slice(-8)}`}
                     </td>
                     <td>
                       <span className="registry-version">v{e.keyVersion}</span>

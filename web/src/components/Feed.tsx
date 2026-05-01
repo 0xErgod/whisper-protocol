@@ -3,10 +3,11 @@ import type { FeedEvent, FeedEnvelopeEvent, FeedKeyEvent } from "../sui/queries"
 import {
   labelForAddress,
   normalizeAddress,
-  shortAddress,
 } from "../crypto/identities";
 import { tryDecrypt } from "../crypto/decrypt";
 import { usePerspective } from "../perspective/context";
+import { RawId } from "./RawId";
+import { gasBreakdownTooltip, shortGas } from "../sui/gas";
 
 interface Props {
   events: FeedEvent[];
@@ -36,13 +37,19 @@ function KeyRow({ ev, now }: { ev: FeedKeyEvent; now: number }) {
       <div className="row-event-side">
         <span className="row-event-kind">KEY · v{ev.keyVersion}</span>
         <span>{formatRelative(ev.timestampMs, now)}</span>
+        <span className="row-event-gas" title={gasBreakdownTooltip(ev.gas)}>
+          gas {shortGas(ev.gas)}
+        </span>
       </div>
       <div className="row-event-body">
         <div className="bubble">
           <div className="bubble-header">
             <span className="tag tag-key">REGISTERED</span>
             <span className="address-known">{labelForAddress(ev.account)}</span>
-            <span className="address-unknown">{shortAddress(ev.account)}</span>
+            <RawId value={ev.account} kind="address" />
+            <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>
+              tx <RawId value={ev.txDigest} kind="tx" />
+            </span>
           </div>
           <div className="bubble-body" style={{ color: "var(--text-dim)" }}>
             {ev.encryptionScheme} · key_version {ev.keyVersion}
@@ -91,6 +98,9 @@ function EnvelopeRow({ ev, now }: { ev: FeedEnvelopeEvent; now: number }) {
       <div className="row-event-side">
         <span className="row-event-kind">ENV · v{ev.keyVersion}</span>
         <span>{formatRelative(ev.timestampMs, now)}</span>
+        <span className="row-event-gas" title={gasBreakdownTooltip(ev.gas)}>
+          gas {shortGas(ev.gas)}
+        </span>
       </div>
       <div className="row-event-body">
         <div className={bubbleClass}>
@@ -104,6 +114,20 @@ function EnvelopeRow({ ev, now }: { ev: FeedEnvelopeEvent; now: number }) {
               {labelForAddress(ev.recipient)}
             </span>
             <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>{ev.schema}</span>
+          </div>
+          <div className="bubble-meta">
+            <span>
+              from <RawId value={ev.sender} kind="address" />
+            </span>
+            <span>
+              to <RawId value={ev.recipient} kind="address" />
+            </span>
+            <span>
+              env <RawId value={ev.envelopeId} kind="envelope" />
+            </span>
+            <span>
+              tx <RawId value={ev.txDigest} kind="tx" />
+            </span>
           </div>
           {isOutgoing ? (
             <div className="bubble-body outgoing">
