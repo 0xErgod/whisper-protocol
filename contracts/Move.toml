@@ -5,4 +5,4 @@ edition = "2024"
 [dependencies]
 
 [environments]
-localnet = "9ebe36a5"
+localnet = "96b10644"

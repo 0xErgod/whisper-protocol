@@ -1,0 +1,72 @@
+import { bytesToHex } from "@noble/hashes/utils";
+import { labelForAddress, normalizeAddress, shortAddress } from "../crypto/identities";
+import type { RegistryEntry } from "../sui/queries";
+import { usePerspective } from "../perspective/context";
+
+interface Props {
+  entries: RegistryEntry[];
+  loading: boolean;
+}
+
+function formatTime(ms: number): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  return d.toISOString().replace("T", " ").slice(5, 19);
+}
+
+export function RegistryView({ entries, loading }: Props) {
+  const { identity } = usePerspective();
+  const youAddress = identity ? normalizeAddress(identity.suiAddress) : null;
+  return (
+    <div className="window">
+      <div className="window-header">
+        <span>KEY REGISTRY · {entries.length} ENTRIES</span>
+        <span>{loading ? "syncing…" : "live"}</span>
+      </div>
+      <div className="window-body">
+        {entries.length === 0 ? (
+          <div className="feed-empty">No keys registered yet.</div>
+        ) : (
+          <table className="registry-table">
+            <thead>
+              <tr>
+                <th>ACCOUNT</th>
+                <th>SCHEME</th>
+                <th>X25519 PUBKEY</th>
+                <th>VER</th>
+                <th>ROTATED</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e) => {
+                const isYou = youAddress === e.account;
+                const pubHex = bytesToHex(e.encryptionPubkey);
+                return (
+                  <tr key={e.account} className={isYou ? "you-row" : undefined}>
+                    <td>
+                      <span className={isYou ? "address you" : "address-known"}>
+                        {labelForAddress(e.account)}
+                      </span>
+                      {isYou && <span className="you-tag">YOU</span>}
+                      <div style={{ color: "var(--text-faint)", fontSize: "0.75rem" }}>
+                        {shortAddress(e.account)}
+                      </div>
+                    </td>
+                    <td style={{ color: "var(--text-dim)" }}>{e.encryptionScheme}</td>
+                    <td className="mono-trunc" style={{ color: "var(--text-dim)" }}>
+                      {pubHex.slice(0, 8)}…{pubHex.slice(-8)}
+                    </td>
+                    <td>
+                      <span className="registry-version">v{e.keyVersion}</span>
+                    </td>
+                    <td style={{ color: "var(--text-faint)" }}>{formatTime(e.rotatedAtMs)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
