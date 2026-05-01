@@ -4,7 +4,19 @@ target/
 contracts/build/
 contracts/Move.lock
 .claude/
-web/node_modules/
-web/dist/
-web/.vite/
-web/tsconfig.tsbuildinfo
+
+# Workspace artifacts
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Local artifacts that shouldn't ever be committed
+publish-output.json
+
+# pnpm temp
+.pnpm-store/

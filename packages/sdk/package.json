@@ -1,0 +1,62 @@
+{
+  "name": "@whisper-protocol/sdk",
+  "version": "0.1.0",
+  "description": "Client SDK for the Whisper Protocol — encrypt, decrypt, and post envelopes over Sui.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./networks": {
+      "types": "./dist/networks.d.ts",
+      "import": "./dist/networks.js"
+    },
+    "./feed": {
+      "types": "./dist/feed.d.ts",
+      "import": "./dist/feed.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@mysten/sui": "^1.38.0",
+    "@noble/ciphers": "^1.0.0",
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xErgod/whisper-protocol.git",
+    "directory": "packages/sdk"
+  },
+  "keywords": [
+    "sui",
+    "whisper",
+    "encryption",
+    "messaging",
+    "x25519",
+    "chacha20poly1305",
+    "privacy"
+  ]
+}
