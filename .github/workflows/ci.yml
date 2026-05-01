@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ts:
+    name: typecheck + build (typescript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck packages
+        run: pnpm -r --filter "./packages/*" run typecheck
+
+      - name: build packages
+        run: pnpm -r --filter "./packages/*" run build
+
+      - name: typecheck web
+        run: pnpm --filter whisper-web run typecheck
+
+      - name: build web
+        run: pnpm --filter whisper-web run build
+
+  rust:
+    name: rust cli check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
+      - run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
+
+  move:
+    name: move package build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install sui cli
+        run: |
+          set -euo pipefail
+          # Use the latest mainnet release of sui — small enough to install
+          # on every CI run; cache later if it becomes a bottleneck.
+          curl -L --fail -o sui.tgz \
+            https://github.com/MystenLabs/sui/releases/download/mainnet-v1.38.0/sui-mainnet-v1.38.0-ubuntu-x86_64.tgz
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf sui.tgz -C "$HOME/.local/bin" sui
+          chmod +x "$HOME/.local/bin/sui"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - run: sui --version
+      - run: sui move build --path contracts
