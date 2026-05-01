@@ -8,9 +8,13 @@ use crate::env_keys::CharacterKey;
 
 const MODULE: &str = "secret_sharing";
 const CLOCK_ID: &str = "0x6";
+const EMPTY_BYTES: &str = "0x";
+const SCHEMA: &str = "text_secret_v1";
+const SCHEME: &str = "x25519-from-ed25519";
 
 pub fn register_key(key: &CharacterKey) -> Result<String> {
     let package = package_id()?;
+    let registry = registry_id()?;
     let output = sui_json([
         "client",
         "call",
@@ -21,12 +25,9 @@ pub fn register_key(key: &CharacterKey) -> Result<String> {
         "--function",
         "register_encryption_key",
         "--args",
-        &package,
-        &hex_arg(b"ed25519"),
-        &hex_arg(&key.ed25519_public_key),
-        &hex_arg(b"x25519-from-ed25519"),
+        &registry,
+        &hex_arg(SCHEME.as_bytes()),
         &hex_arg(key.x25519_public_key.as_bytes()),
-        "1",
         CLOCK_ID,
         "--sender",
         &key.sui_address_hex(),
@@ -44,8 +45,11 @@ pub fn post_envelope(
     sender: &CharacterKey,
     recipient: &CharacterKey,
     envelope: &LocalEnvelope,
+    key_version: u64,
 ) -> Result<String> {
     let package = package_id()?;
+    let registry = registry_id()?;
+    let key_version_arg = key_version.to_string();
     let output = sui_json([
         "client",
         "call",
@@ -56,12 +60,12 @@ pub fn post_envelope(
         "--function",
         "post_envelope",
         "--args",
-        &package,
+        &registry,
         &recipient.sui_address_hex(),
-        &hex_arg(b"text_secret_v1"),
-        "1",
+        EMPTY_BYTES,
+        &hex_arg(SCHEMA.as_bytes()),
+        &key_version_arg,
         &hex_prefixed(&envelope.eph_pubkey_hex),
-        "0x00",
         &hex_prefixed(&envelope.nonce_hex),
         &hex_prefixed(&envelope.ciphertext_hex),
         CLOCK_ID,
@@ -74,6 +78,47 @@ pub fn post_envelope(
 
     find_created_object(&output, &format!("{package}::{MODULE}::EncryptedEnvelope"))
         .context("published transaction did not create an EncryptedEnvelope")
+}
+
+pub fn current_key_version(account_hex: &str) -> Result<u64> {
+    let registry = registry_id()?;
+    let registry_object = sui_json(["client", "object", &registry, "--json"])?;
+    let registry_bytes = values_to_bytes(
+        registry_object["data"]["Move"]["contents"]
+            .as_array()
+            .context("registry object has no Move contents")?,
+    )?;
+    // KeyRegistry BCS: id: UID(32 bytes) | entries: Table { id: UID(32), size: u64(8) }
+    if registry_bytes.len() < 64 {
+        bail!("registry contents shorter than expected");
+    }
+    let table_id = format!("0x{}", hex::encode(&registry_bytes[32..64]));
+    let normalized_account = ensure_0x(account_hex);
+
+    let fields = sui_json(["client", "dynamic-field", &table_id, "--json"])?;
+    let entries = fields["dynamicFields"]
+        .as_array()
+        .context("dynamic-field response missing dynamicFields array")?;
+    for entry in entries {
+        let name = entry["fieldObject"]["json"]["name"].as_str().unwrap_or("");
+        if name == normalized_account {
+            let version_str = entry["fieldObject"]["json"]["value"]["key_version"]
+                .as_str()
+                .context("registry entry missing key_version")?;
+            return version_str
+                .parse::<u64>()
+                .context("registry key_version was not a valid u64");
+        }
+    }
+    bail!("account {normalized_account} is not registered in the key registry");
+}
+
+fn ensure_0x(s: &str) -> String {
+    if s.starts_with("0x") {
+        s.to_owned()
+    } else {
+        format!("0x{s}")
+    }
 }
 
 pub fn inbox(key: &CharacterKey) -> Result<Vec<String>> {
@@ -124,6 +169,11 @@ pub fn inbox(key: &CharacterKey) -> Result<Vec<String>> {
 fn package_id() -> Result<String> {
     std::env::var("SUI_PACKAGE_ID")
         .context("missing SUI_PACKAGE_ID in .env; publish the package and set it")
+}
+
+fn registry_id() -> Result<String> {
+    std::env::var("SUI_REGISTRY_ID")
+        .context("missing SUI_REGISTRY_ID in .env; set it to the shared KeyRegistry object id from publish output")
 }
 
 fn sui_json<const N: usize>(args: [&str; N]) -> Result<Value> {
@@ -198,13 +248,12 @@ struct DecodedEnvelope {
 fn decode_envelope_contents(bytes: &[u8]) -> Result<DecodedEnvelope> {
     let mut cursor = Cursor { bytes, offset: 0 };
     let object_id = cursor.address_hex()?;
-    let _game_id = cursor.address_hex()?;
     let sender = cursor.address_hex()?;
     let recipient = cursor.address_hex()?;
+    let _context = cursor.vector()?;
     let _schema = cursor.vector()?;
     let _key_version = cursor.u64()?;
     let eph_pubkey = cursor.vector()?;
-    let _wrapped_key = cursor.vector()?;
     let nonce = cursor.vector()?;
     let ciphertext = cursor.vector()?;
     let _created_at_ms = cursor.u64()?;

@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use crypto::{decrypt_for_recipient, encrypt_for_recipient};
 use env_keys::{Character, generate_env_template, load_character};
-use sui_cli::{inbox, post_envelope, register_key};
+use sui_cli::{current_key_version, inbox, post_envelope, register_key};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -113,7 +113,8 @@ fn main() -> Result<()> {
             let sender = load_character(from.into())?;
             let recipient = load_character(to.into())?;
             let envelope = encrypt_for_recipient(&sender, &recipient, text.as_bytes())?;
-            let object_id = post_envelope(&sender, &recipient, &envelope)?;
+            let key_version = current_key_version(&recipient.sui_address_hex())?;
+            let object_id = post_envelope(&sender, &recipient, &envelope, key_version)?;
             println!("{object_id}");
         }
         Command::Inbox { character } => {
