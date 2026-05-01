@@ -13,12 +13,12 @@
   --gray-80: #c6c6c6;
   --gray-93: #eeeeee;
 
-  --brand: #e4f221;
-  --brand-dim: rgba(228, 242, 33, 0.55);
-  --brand-faint: rgba(228, 242, 33, 0.12);
+  --brand: #ff9944;
+  --brand-dim: rgba(255, 153, 68, 0.55);
+  --brand-faint: rgba(255, 153, 68, 0.12);
   --bright-green: #55ff55;
   --bright-magenta: #ff55ff;
-  --bright-cyan: #55ffff;
+  --bright-cyan: #773333;
   --bright-orange: #ffaa55;
 
   --ok: var(--bright-green);

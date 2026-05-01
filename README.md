@@ -1,6 +1,14 @@
-# Signal Privacy PoC
+# Whisper Protocol PoC
 
-Proof of concept for Sui-based private secret sharing.
+Proof of concept for Whisper — Sui-based private messaging where the
+ciphertext, sender, recipient, schema, and key version are public on chain
+but the plaintext is only legible to the addressed recipient.
+
+> **Naming note.** The on-chain Move module is still `secret_sharing` and
+> the HKDF info string is still `sui-secret-sharing-poc-v1`. These are
+> wire-level identifiers — changing them requires a republish and key
+> rotation. The "Whisper" rename is a display-layer change only, so the
+> running localnet keeps working.
 
 The current implementation focuses on the protocol core:
 
