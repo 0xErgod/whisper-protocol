@@ -5,6 +5,7 @@ import {
   clearCachedKeypair,
   deriveFromWalletSigner,
   readCachedKeypair,
+  requireEd25519,
   writeCachedKeypair,
 } from "@whisper-protocol/wallet-derived-keys";
 import type {
@@ -33,6 +34,14 @@ export interface WhisperKeysState {
   deriving: boolean;
   /** Last error from the derivation flow, if any. */
   error: string | null;
+  /**
+   * Set when the connected wallet uses an unsupported signature scheme
+   * (anything other than Ed25519). Whisper's derivation requires
+   * deterministic signing; non-Ed25519 wallets would silently produce a
+   * different encryption key on each session and lose access to past
+   * envelopes. When this is non-null, `derive()` is a no-op.
+   */
+  schemeError: string | null;
   /** Trigger derivation. Will pop the wallet prompt if not cached. */
   derive: () => Promise<DerivedEncryptionKeypair | null>;
   /** Forget the cached keypair on this device. */
@@ -47,13 +56,24 @@ export function useWhisperKeys(): WhisperKeysState {
   const [hasCached, setHasCached] = useState<boolean | null>(null);
   const [deriving, setDeriving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [schemeError, setSchemeError] = useState<string | null>(null);
 
-  // Reset state when the connected wallet changes.
+  // Reset state when the connected wallet changes. Run the Ed25519 gate
+  // immediately so the bar can refuse to show "derive" for unsupported
+  // wallets — better UX than letting the user click and seeing the prompt
+  // be rejected after the fact.
   useEffect(() => {
     setKeys(null);
     setHasCached(null);
     setError(null);
+    setSchemeError(null);
     if (!account) return;
+    try {
+      requireEd25519(account);
+    } catch (e) {
+      setSchemeError(e instanceof Error ? e.message : String(e));
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -94,6 +114,10 @@ export function useWhisperKeys(): WhisperKeysState {
     setDeriving(true);
     setError(null);
     try {
+      // Belt-and-braces: the connect-effect already runs this, but
+      // catching it here too means the gate can't be bypassed by a
+      // direct caller.
+      requireEd25519(account);
       const message: CanonicalMessageInput = {
         address: account.address,
         version: VERSION,
@@ -149,5 +173,5 @@ export function useWhisperKeys(): WhisperKeysState {
     setHasCached(false);
   }, [account?.address]);
 
-  return { keys, hasCached, deriving, error, derive, clear };
+  return { keys, hasCached, deriving, error, schemeError, derive, clear };
 }
