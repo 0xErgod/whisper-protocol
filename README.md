@@ -71,8 +71,36 @@ See [specs/](specs/) for full design notes and trade-offs.
 ## CI/CD
 
 - **`ci.yml`** — typecheck + build on every push and PR (TypeScript packages, Rust CLI, Move package).
-- **`publish-sdk.yml`** — on tag `sdk-v*` or `wallet-derived-v*`, publish to npm with provenance.
+- **`release.yml`** — runs `semantic-release` on every push to `main`. Each package decides independently whether to cut a release based on the **scope** of the commits since its last tag.
 - **`deploy-contract.yml`** — manually triggered (`workflow_dispatch`); publishes the Move package to testnet (or mainnet with explicit confirmation), captures the new IDs, opens a PR updating `networks.json`.
+
+## Releasing
+
+The two npm packages release independently and automatically. There is no manual `npm version` / `git tag` / `git push --tags` step. **The version number, changelog, npm publish, GitHub release, and changelog commit are all driven by the conventional-commit history.**
+
+To trigger a release, write commits with the right scope and merge them to `main`:
+
+| Commit                                  | Effect                                          |
+| --------------------------------------- | ----------------------------------------------- |
+| `feat(sdk): add new helper`             | `@whisper-protocol/sdk` minor release           |
+| `fix(sdk): correct decoding bug`        | `@whisper-protocol/sdk` patch release           |
+| `feat(sdk)!: rename WhisperClient API`  | `@whisper-protocol/sdk` **major** release       |
+| `feat(wallet-derived-keys): …`          | `@whisper-protocol/wallet-derived-keys` release |
+| `feat: top-level repo change`           | no release (unscoped)                           |
+| `feat(web): dApp UI tweak`              | no release (web is not published)               |
+| `chore: …` / `ci: …` / `test: …`        | no release                                      |
+
+When the workflow finds commits that warrant a release for a given package, it:
+
+1. Computes the next version from the commit history (semver).
+2. Updates `packages/<pkg>/package.json` and writes / appends `packages/<pkg>/CHANGELOG.md`.
+3. Publishes to npm with provenance (`--provenance` via OIDC, no manual signing).
+4. Creates a GitHub release at the tag `sdk-vX.Y.Z` (or `wallet-derived-vX.Y.Z`) with the changelog body and the npm tarball attached.
+5. Pushes a `chore(<pkg>): release X.Y.Z [skip ci]` commit back to `main` so the version bump persists. The `[skip ci]` keeps the next CI run from running again.
+
+**Trade-off you accepted by choosing semantic-release**: there is no review gate on the release itself. A `feat(sdk):` commit merged to `main` will publish to npm within ~3 minutes. The protection is at *merge time* — protect `main` so all PRs require green CI before merging, and treat scoped commits as deliberate release intents. To stage a release without publishing, push to a `next` / `alpha` / `beta` branch — semantic-release ships those as pre-releases (`0.2.0-beta.1`).
+
+Required GitHub repo secrets: `NPM_TOKEN` (Automation token with publish scope on `@whisper-protocol`).
 
 ## Specs
 

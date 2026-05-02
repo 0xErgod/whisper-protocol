@@ -1,6 +1,6 @@
 {
   "name": "@whisper-protocol/sdk",
-  "version": "0.1.0",
+  "version": "0.0.0-development",
   "description": "Client SDK for the Whisper Protocol — encrypt, decrypt, and post envelopes over Sui.",
   "license": "MIT",
   "type": "module",

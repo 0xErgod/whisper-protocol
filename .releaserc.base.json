@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/semantic-release",
+  "branches": [
+    "main",
+    { "name": "next", "prerelease": true },
+    { "name": "alpha", "prerelease": true },
+    { "name": "beta", "prerelease": true }
+  ]
+}

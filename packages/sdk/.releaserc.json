@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json.schemastore.org/semantic-release",
+  "extends": "../../.releaserc.base.json",
+  "tagFormat": "sdk-v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          { "scope": "sdk", "type": "feat", "release": "minor" },
+          { "scope": "sdk", "type": "fix", "release": "patch" },
+          { "scope": "sdk", "type": "perf", "release": "patch" },
+          { "scope": "sdk", "type": "refactor", "release": "patch" },
+          { "scope": "sdk", "type": "*", "breaking": true, "release": "major" },
+          { "scope": "*", "release": false }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            { "type": "feat", "section": "Features" },
+            { "type": "fix", "section": "Bug Fixes" },
+            { "type": "perf", "section": "Performance" },
+            { "type": "refactor", "section": "Refactors" },
+            { "type": "docs", "section": "Documentation", "hidden": false },
+            { "type": "chore", "hidden": true },
+            { "type": "ci", "hidden": true },
+            { "type": "test", "hidden": true }
+          ]
+        }
+      }
+    ],
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md",
+        "changelogTitle": "# @whisper-protocol/sdk\n\nAll notable changes are documented here. The format follows [Keep a Changelog](https://keepachangelog.com) and the project adheres to [Semantic Versioning](https://semver.org)."
+      }
+    ],
+    [
+      "@semantic-release/npm",
+      {
+        "pkgRoot": ".",
+        "tarballDir": "release-artifacts"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["package.json", "CHANGELOG.md"],
+        "message": "chore(sdk): release ${nextRelease.version}\n\n${nextRelease.notes}\n\n[skip ci]"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "release-artifacts/*.tgz", "label": "npm tarball" }
+        ]
+      }
+    ]
+  ]
+}

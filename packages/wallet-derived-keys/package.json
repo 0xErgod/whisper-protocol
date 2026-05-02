@@ -1,6 +1,6 @@
 {
   "name": "@whisper-protocol/wallet-derived-keys",
-  "version": "0.1.0",
+  "version": "0.0.0-development",
   "description": "Derive a stable X25519 encryption keypair from a Sui wallet's personal-message signature.",
   "license": "MIT",
   "type": "module",
