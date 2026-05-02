@@ -4,6 +4,14 @@ Sui-based private messaging where the ciphertext, sender, recipient, schema, and
 
 This monorepo houses the Move package, the TypeScript SDK, the wallet-derivation helper, and a demo dApp.
 
+## Read more
+
+The design rationale, threat model, and motivation are written up at:
+
+> **[Decentralized Pairwise Secret Communication Protocol over SUI Blockchain](https://thoughtfolio.xyz/Decentralized+Pairwise+Secret+Communication+Protocol+over+SUI+Blockchain)**
+
+Start there if you want the *why* before the *how*. The rest of this README is the *how* — how to use it, how to run it locally, how releases work.
+
 ## Try it
 
 Live demo on Sui **testnet**: **<https://0xergod.github.io/whisper-protocol/>** *(canonical deployment from this repo's `main`)*
