@@ -5,6 +5,7 @@ import {
   useSignAndExecuteTransaction,
 } from "@mysten/dapp-kit";
 import { bytesToHex } from "@noble/hashes/utils";
+import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   ENCRYPTION_SCHEME,
   normalizeAddress,
@@ -55,15 +56,15 @@ export function IdentityBar({ registry, keysState }: Props) {
     try {
       const tx = whisper.buildRegisterKeyTx(keys.encryptionPublicKey);
       const result = await signAndExecute({ transaction: tx, chain: ACTIVE_CHAIN });
-      const full = await suiClient.waitForTransaction({
+      const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
         digest: result.digest,
         options: { showEffects: true },
       });
-      const status = (full.effects?.status as { status?: string; error?: string } | undefined)
-        ?.status ?? "unknown";
-      if (status !== "success") {
-        const errText = (full.effects?.status as { error?: string } | undefined)?.error;
-        throw new Error(`tx failed (${status})${errText ? `: ${errText}` : ""}`);
+      const execStatus = full.effects?.status;
+      if (!execStatus || execStatus.status !== "success") {
+        const code = execStatus?.status ?? "unknown";
+        const errText = execStatus?.error;
+        throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
       }
       setRegSuccess(full.digest);
     } catch (e) {
