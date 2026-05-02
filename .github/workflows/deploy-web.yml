@@ -50,6 +50,14 @@ jobs:
       - name: install
         run: pnpm install --frozen-lockfile
 
+      # The web app imports @whisper-protocol/sdk + @whisper-protocol/
+      # wallet-derived-keys via the workspace `link:` protocol, so they
+      # resolve to the package source dirs. TypeScript and Vite both
+      # need the packages' compiled `dist/` to exist before the web
+      # build can resolve their type declarations and entry points.
+      - name: build sdk packages first
+        run: pnpm -r --filter "./packages/*" run build
+
       - name: build web with pages base path
         env:
           # Tells vite.config.ts to emit `<script src="/whisper-protocol/...">`
