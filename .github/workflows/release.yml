@@ -11,8 +11,17 @@ name: release
 #   feat: …                       → no release (unscoped commits don't release)
 #   chore / ci / test / docs: …   → no release
 #
-# Tag namespaces are isolated (`sdk-v*` vs `wallet-derived-v*`) so the
-# two packages cut versions independently. Provenance signing is on.
+# Authentication uses npm's OIDC trusted-publishing flow — no NPM_TOKEN
+# secret. The workflow's GitHub-issued OIDC JWT is exchanged at npm for
+# a short-lived publish credential, gated by a per-package
+# trusted-publisher record on npmjs.com that pins (org, repo, workflow
+# filename). Renaming this file or moving the release job into a
+# reusable workflow will break publishing — update the npm-side
+# trusted-publisher records first if you do.
+#
+# Provenance signing is automatic with OIDC; npm derives the Sigstore
+# attestation from the same id-token, so consumers see a green
+# "Provenance" badge on npmjs.com.
 
 on:
   push:
@@ -28,7 +37,9 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
-  # npm provenance signing exchanges this token for a Sigstore attestation.
+  # OIDC: lets the runner request the JWT that proves
+  # `(repo, workflow)` matches the trusted-publisher record on npm.
+  # Required for both publish auth and provenance signing.
   id-token: write
 
 jobs:
@@ -72,35 +83,13 @@ jobs:
       - name: build target package
         run: pnpm --filter "${{ matrix.package.name }}" run build
 
-      - name: probe npm token (diagnostic — remove after first green run)
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Print token shape — first 8 chars + length — without leaking it.
-          # Real Automation tokens start with `npm_` and are 40+ characters.
-          token_prefix=$(printf '%.8s' "$NPM_TOKEN")
-          token_len=${#NPM_TOKEN}
-          echo "Token prefix: ${token_prefix}…"
-          echo "Token length: ${token_len}"
-          # Mirror what semantic-release does: write a project-local .npmrc
-          # with the token, then call `npm whoami`.
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
-          echo "Calling npm whoami:"
-          npm whoami --registry=https://registry.npmjs.org/ || {
-            echo "::error::npm whoami failed — token rejected by registry."
-            exit 1
-          }
-          echo "Org membership for whisper-protocol:"
-          npm org ls whisper-protocol 2>&1 || echo "(no access to org listing — that's OK if the token is granular)"
-
       - name: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # `semantic-release` looks for these to sign the npm publish
-          # via OIDC when --provenance is set in package.json's
-          # publishConfig.
-          NPM_CONFIG_PROVENANCE: "true"
+          # No NPM_TOKEN — semantic-release's npm plugin auto-detects
+          # GitHub Actions' OIDC token via id-token:write and exchanges
+          # it for a short-lived npm publish credential. Provenance is
+          # signed from the same id-token; no NPM_CONFIG_PROVENANCE
+          # needed either.
         working-directory: ${{ matrix.package.dir }}
         run: pnpm exec semantic-release

@@ -100,7 +100,20 @@ When the workflow finds commits that warrant a release for a given package, it:
 
 **Trade-off you accepted by choosing semantic-release**: there is no review gate on the release itself. A `feat(sdk):` commit merged to `main` will publish to npm within ~3 minutes. The protection is at *merge time* — protect `main` so all PRs require green CI before merging, and treat scoped commits as deliberate release intents. To stage a release without publishing, push to a `next` / `alpha` / `beta` branch — semantic-release ships those as pre-releases (`0.2.0-beta.1`).
 
-Required GitHub repo secrets: `NPM_TOKEN` (Automation token with publish scope on `@whisper-protocol`).
+### Authentication (OIDC trusted publishing)
+
+The release workflow uses npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/) flow — no long-lived `NPM_TOKEN` secret. GitHub Actions issues a short-lived OIDC JWT proving `(0xErgod/whisper-protocol, release.yml)`, npm validates it against a per-package trusted-publisher record, and exchanges it for a credential that lasts a few minutes. Provenance signing happens from the same id-token, so every npm release is automatically Sigstore-signed and shows a green badge on npmjs.com.
+
+What this setup requires:
+
+- **`id-token: write`** permission on the workflow job (already set in `release.yml`).
+- **A trusted-publisher record on each package** (`@whisper-protocol/sdk` and `@whisper-protocol/wallet-derived-keys`) at npmjs.com → package settings → "Publishing access" → add GitHub Actions trusted publisher with:
+  - Organization: `0xErgod`
+  - Repository: `whisper-protocol`
+  - Workflow filename: `release.yml`
+  - Environment name: *(leave blank)*
+
+If you ever rename `release.yml` or move the release logic into a reusable workflow, update the npm-side records first or the next publish will 401. For an extra protection layer, add a GitHub `production` environment with required reviewers and pin it on both the workflow job (`environment: production`) and the trusted-publisher record — every release then requires manual approval before npm accepts it.
 
 ## Specs
 
