@@ -1,0 +1,84 @@
+name: release
+
+# Runs semantic-release on every push to `main` (and prerelease branches).
+# Each package decides independently whether to release based on the
+# scope of the conventional-commit messages since its last tag:
+#
+#   feat(sdk): …                  → SDK gets a minor bump
+#   fix(sdk): …                   → SDK gets a patch bump
+#   feat(sdk)!: …                 → SDK gets a major bump
+#   feat(wallet-derived-keys): …  → wallet-derived-keys gets a minor bump
+#   feat: …                       → no release (unscoped commits don't release)
+#   chore / ci / test / docs: …   → no release
+#
+# Tag namespaces are isolated (`sdk-v*` vs `wallet-derived-v*`) so the
+# two packages cut versions independently. Provenance signing is on.
+
+on:
+  push:
+    branches:
+      - main
+      - next
+      - alpha
+      - beta
+
+permissions:
+  # semantic-release/git pushes the version-bump commit + the tag,
+  # semantic-release/github creates the GitHub release.
+  contents: write
+  issues: write
+  pull-requests: write
+  # npm provenance signing exchanges this token for a Sigstore attestation.
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    # Matrix one job per package so failures isolate per-package and
+    # logs are easier to scan. Each job runs semantic-release for one
+    # package only, scoped via its own .releaserc.json + tagFormat.
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: "@whisper-protocol/sdk"
+            dir: packages/sdk
+          - name: "@whisper-protocol/wallet-derived-keys"
+            dir: packages/wallet-derived-keys
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # semantic-release needs full history to walk commits since the
+          # last tag and decide the next version.
+          fetch-depth: 0
+          # Use a token that can push back to main (commit + tag). The
+          # default GITHUB_TOKEN works because we set `contents: write`
+          # above, and main isn't protected (yet — see README).
+          persist-credentials: true
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: build target package
+        run: pnpm --filter "${{ matrix.package.name }}" run build
+
+      - name: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # `semantic-release` looks for these to sign the npm publish
+          # via OIDC when --provenance is set in package.json's
+          # publishConfig.
+          NPM_CONFIG_PROVENANCE: "true"
+        working-directory: ${{ matrix.package.dir }}
+        run: pnpm exec semantic-release
