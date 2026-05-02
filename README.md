@@ -4,6 +4,19 @@ Sui-based private messaging where the ciphertext, sender, recipient, schema, and
 
 This monorepo houses the Move package, the TypeScript SDK, the wallet-derivation helper, and a demo dApp.
 
+## Try it
+
+Live demo on Sui **testnet**: **<https://0xergod.github.io/whisper-protocol/>** *(canonical deployment from this repo's `main`)*
+
+You will need a Sui wallet (Slush, Suiet, etc.) set to **Testnet**. The demo derives an X25519 encryption keypair from one personal-message signature, registers your public key on chain, and lets you send encrypted secrets to any other registered address. Nothing leaves your browser unencrypted; the chain only ever sees ciphertext.
+
+> **Trust the URL above.** Anyone can fork this repo and publish a copy to their own `*.github.io` subdomain. Only the URL above is built from `main` of `0xErgod/whisper-protocol` via the `deploy-web` workflow.
+
+## npm packages
+
+- [`@whisper-protocol/sdk`](https://www.npmjs.com/package/@whisper-protocol/sdk) — encrypt, decrypt, build txs
+- [`@whisper-protocol/wallet-derived-keys`](https://www.npmjs.com/package/@whisper-protocol/wallet-derived-keys) — derive an X25519 encryption keypair from a Sui wallet signature
+
 ## Layout
 
 ```
@@ -72,6 +85,7 @@ See [specs/](specs/) for full design notes and trade-offs.
 
 - **`ci.yml`** — typecheck + build on every push and PR (TypeScript packages, Rust CLI, Move package).
 - **`release.yml`** — runs `semantic-release` on every push to `main`. Each package decides independently whether to cut a release based on the **scope** of the commits since its last tag.
+- **`deploy-web.yml`** — on every push to `main`, builds the demo dApp and deploys it to GitHub Pages at <https://0xergod.github.io/whisper-protocol/>.
 - **`deploy-contract.yml`** — manually triggered (`workflow_dispatch`); publishes the Move package to testnet (or mainnet with explicit confirmation), captures the new IDs, opens a PR updating `networks.json`.
 
 ## Releasing
