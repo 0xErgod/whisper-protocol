@@ -29,7 +29,8 @@
   "packageManager": "pnpm@8.15.8",
   "pnpm": {
     "overrides": {
-      "@mysten/sui": "1.38.0"
+      "@mysten/sui": "1.38.0",
+      "@semantic-release/npm": "^13.1.0"
     }
   }
 }
