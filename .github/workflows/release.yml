@@ -72,6 +72,28 @@ jobs:
       - name: build target package
         run: pnpm --filter "${{ matrix.package.name }}" run build
 
+      - name: probe npm token (diagnostic — remove after first green run)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Print token shape — first 8 chars + length — without leaking it.
+          # Real Automation tokens start with `npm_` and are 40+ characters.
+          token_prefix=$(printf '%.8s' "$NPM_TOKEN")
+          token_len=${#NPM_TOKEN}
+          echo "Token prefix: ${token_prefix}…"
+          echo "Token length: ${token_len}"
+          # Mirror what semantic-release does: write a project-local .npmrc
+          # with the token, then call `npm whoami`.
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
+          echo "Calling npm whoami:"
+          npm whoami --registry=https://registry.npmjs.org/ || {
+            echo "::error::npm whoami failed — token rejected by registry."
+            exit 1
+          }
+          echo "Org membership for whisper-protocol:"
+          npm org ls whisper-protocol 2>&1 || echo "(no access to org listing — that's OK if the token is granular)"
+
       - name: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
