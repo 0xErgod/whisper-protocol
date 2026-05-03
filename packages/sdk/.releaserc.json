@@ -40,24 +40,10 @@
       }
     ],
     [
-      "@semantic-release/changelog",
-      {
-        "changelogFile": "CHANGELOG.md",
-        "changelogTitle": "# @whisper-protocol/sdk\n\nAll notable changes are documented here. The format follows [Keep a Changelog](https://keepachangelog.com) and the project adheres to [Semantic Versioning](https://semver.org)."
-      }
-    ],
-    [
       "@semantic-release/npm",
       {
         "pkgRoot": ".",
         "tarballDir": "release-artifacts"
-      }
-    ],
-    [
-      "@semantic-release/git",
-      {
-        "assets": ["package.json", "CHANGELOG.md"],
-        "message": "chore(sdk): release ${nextRelease.version}\n\n${nextRelease.notes}\n\n[skip ci]"
       }
     ],
     [
