@@ -71,11 +71,18 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
-      # OIDC publish needs npm 11.5.1+. Node 22's bundled npm in
-      # GitHub's runner toolcache is broken for `npm install -g`
-      # (missing 'promise-retry' module on the prebuilt 22.22.x
-      # image), so we use corepack — bundled with Node, not part of
-      # the broken npm install — to pin a known OIDC-capable npm.
+      # OIDC publish needs npm 11.5.1+. Notes on getting there:
+      #
+      # - Node 22's toolcache image (22.22.2) ships a broken bundled
+      #   npm@10 — `npm install -g npm@latest` fails with
+      #   MODULE_NOT_FOUND for promise-retry (actions/runner-images
+      #   #13883). We can't use Node 22.
+      # - corepack with `prepare npm@11.5.1 --activate` doesn't take
+      #   precedence over the toolcache npm on PATH (`npm --version`
+      #   stays at 10.9.7 on the next step).
+      # - Node 20 ships a working bundled npm@10 that CAN run
+      #   `npm install -g npm@11.5.1`. That's the only path that
+      #   actually swaps the npm on PATH.
       #
       # IMPORTANT: do NOT pass `registry-url` to setup-node.
       # setup-node's registry-url writes a project-local .npmrc with
@@ -85,15 +92,15 @@ jobs:
       # itself.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: pnpm
 
-      - name: pin OIDC-capable npm via corepack
+      - name: install OIDC-capable npm
         run: |
           set -euo pipefail
-          corepack enable
-          corepack prepare npm@11.5.1 --activate
-          npm --version
+          npm install -g npm@11.5.1
+          echo "npm version: $(npm --version)"
+          echo "node version: $(node --version)"
 
       - name: install
         run: pnpm install --frozen-lockfile
