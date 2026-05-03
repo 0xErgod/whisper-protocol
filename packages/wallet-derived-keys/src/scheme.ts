@@ -48,21 +48,49 @@ export function suiAddressFromPublicKey(
  * each scheme's address derivation and matching against the account's
  * own address.
  *
- * Returns null if no scheme matches — usually means the wallet returned
- * a public key shape we don't recognize (custom multisig, future scheme),
- * which is itself a signal to refuse derivation.
+ * Wallets expose `account.publicKey` in one of two shapes:
+ *   - **Raw**: just the public key bytes (32 for Ed25519, 33 for
+ *     Secp256k1/r1, etc.). The address is `BLAKE2b(flag || raw)`.
+ *   - **Flagged**: the flag byte is already prepended to the key bytes.
+ *     The address is `BLAKE2b(flagged)`.
+ *
+ * Both shapes show up in the wild — Slush, for example, prepends the
+ * flag — so we try both interpretations before giving up. Returns null
+ * if no combination matches, which usually means the account uses a
+ * scheme we don't recognize (custom multisig, future scheme) and is a
+ * signal to refuse derivation.
  */
 export function detectSchemeFromAccount(account: {
   address: string;
   publicKey: ArrayLike<number>;
 }): SuiSignatureScheme | null {
   const target = normalizeAddress(account.address);
-  const pubkey = Uint8Array.from(account.publicKey);
+  const bytes = Uint8Array.from(account.publicKey);
+
+  // Raw-pubkey interpretation: try every known flag.
   for (const [scheme, flag] of Object.entries(SUI_SIGNATURE_FLAGS)) {
-    if (suiAddressFromPublicKey(flag, pubkey) === target) {
+    if (suiAddressFromPublicKey(flag, bytes) === target) {
       return scheme as SuiSignatureScheme;
     }
   }
+
+  // Flagged-pubkey interpretation: assume the first byte is already the
+  // flag, hash the whole thing as-is, and check against the address.
+  // We still verify the leading byte matches a known scheme so we don't
+  // accept arbitrary inputs that happen to BLAKE2b-collide.
+  if (bytes.length > 1) {
+    const leadingFlag = bytes[0]!;
+    const matchedScheme = (Object.entries(SUI_SIGNATURE_FLAGS) as Array<
+      [SuiSignatureScheme, number]
+    >).find(([, flag]) => flag === leadingFlag)?.[0];
+    if (matchedScheme) {
+      const hash = blake2b(bytes, { dkLen: 32 });
+      if (`0x${bytesToHex(hash)}` === target) {
+        return matchedScheme;
+      }
+    }
+  }
+
   return null;
 }
 
