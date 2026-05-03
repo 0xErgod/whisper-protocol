@@ -75,3 +75,43 @@ export async function deriveFromWalletSigner(
   const { signature } = await signer(messageBytes);
   return deriveFromSignature(signature, message);
 }
+
+/**
+ * Deterministic-sign wallet abstraction (e.g. EVE Vault's
+ * `misc:deriveSignature` feature).
+ *
+ * This path exists because zkLogin wallets can't sign personal messages
+ * deterministically — the user signature is produced by an ephemeral
+ * keypair that rotates every session, so the resulting bytes drift.
+ * Wallets that expose a deterministic-sign feature derive a stable
+ * Ed25519 sub-key per `(user, scope)` and sign with it instead.
+ *
+ * The signer should:
+ *   - Be byte-deterministic for `(identity, scope, message)` — same input
+ *     produces the same signature across sessions and devices.
+ *   - Wrap the dApp-supplied bytes in a wallet-controlled canonical
+ *     envelope before signing (so the resulting signature can't be
+ *     replayed as a transaction). The wallet returns the wrapped bytes
+ *     it actually signed; we HKDF the signature only — the wrapped
+ *     bytes are surfaced in the result for receipts/debugging.
+ *
+ * The HKDF salt/info are identical to `deriveFromSignature`, so the only
+ * difference between paths is which signature bytes feed the HKDF. That
+ * means the X25519 keypair derived via the deterministic-sign path will
+ * NOT match the keypair a user previously derived via the
+ * personal-message path — these are two different wallets producing
+ * different signatures. That's intentional: keys are pinned to their
+ * derivation path, not portable across paths.
+ */
+export async function deriveFromDeterministicSigner(
+  signer: (
+    scope: string,
+    messageBytes: Uint8Array,
+  ) => Promise<{ signature: Uint8Array }>,
+  message: CanonicalMessageInput,
+  scope: string,
+): Promise<DerivedEncryptionKeypair> {
+  const messageBytes = canonicalMessageBytes(message);
+  const { signature } = await signer(scope, messageBytes);
+  return deriveFromSignature(signature, message);
+}

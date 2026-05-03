@@ -8,7 +8,11 @@
  * full threat model.
  */
 
-const PROTOCOL_NAME = "whisper-protocol";
+import {
+  CURRENT_DERIVATION_VERSION,
+  ROOT_SCOPE,
+  WHISPER_PROTOCOL_NAME,
+} from "./constants.js";
 
 export interface CanonicalMessageInput {
   /** Sui address of the wallet. Lowercased and `0x`-prefixed inside. */
@@ -35,8 +39,8 @@ function normalizeAddress(addr: string): string {
 
 export function canonicalMessage(input: CanonicalMessageInput): string {
   const address = normalizeAddress(input.address);
-  const version = input.version ?? 1;
-  const scope = input.scope ?? "root";
+  const version = input.version ?? CURRENT_DERIVATION_VERSION;
+  const scope = input.scope ?? ROOT_SCOPE;
   const purpose = input.purpose ?? "encryption-keypair";
 
   // Layout:
@@ -47,7 +51,7 @@ export function canonicalMessage(input: CanonicalMessageInput): string {
   //   line 5: scope: <s>
   // No trailing newline. UTF-8.
   return [
-    PROTOCOL_NAME,
+    WHISPER_PROTOCOL_NAME,
     `version: ${version}`,
     `purpose: ${purpose}`,
     `address: ${address}`,
