@@ -197,6 +197,14 @@ export function IdentityBar({ registry, keysState }: Props) {
             kind="bytes"
           />
           <span className="identity-foot-spacer" />
+          {keysState.signPath && (
+            <span className="identity-foot-scheme">
+              path{" "}
+              {keysState.signPath === "derive-signature"
+                ? "misc:deriveSignature"
+                : "personal-message"}
+            </span>
+          )}
           <span className="identity-foot-scheme">scheme {ENCRYPTION_SCHEME}</span>
         </div>
       )}

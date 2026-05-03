@@ -93,6 +93,101 @@ through the standard `signPersonalMessage` API*. A custom signer that
 signs raw bytes will silently produce a different signature — see
 **Trade-offs** §9.
 
+## Wallet Integration Paths
+
+Two Wallet-Standard features can produce the deterministic signature
+the derivation pipeline consumes. The dApp picks one at runtime based
+on what the connected wallet exposes; the choice is invisible to
+on-chain logic.
+
+### Path A — `sui:signPersonalMessage`
+
+The default. Any Sui wallet that signs personal messages with an
+RFC-8032 Ed25519 key qualifies. The SDK runs the **Ed25519 scheme
+gate** (see §"The One Property That Makes This Work") before invoking
+the wallet, so non-Ed25519 wallets are refused at registration time
+with a clear error.
+
+This path covers Slush, the official Sui Wallet, hardware wallets, and
+any browser-extension wallet that uses Wallet-Standard's
+`sui:signPersonalMessage` feature.
+
+### Path B — `misc:deriveSignature`
+
+For wallets where `sui:signPersonalMessage` is *not* deterministic —
+notably **zkLogin wallets**, where the user-signature component is
+produced by a per-session ephemeral keypair — the wallet may instead
+expose a Wallet-Standard custom feature with the identifier
+`misc:deriveSignature`.
+
+A wallet implementing this feature derives an Ed25519 sub-key
+internally from the user's stable identity material (e.g.
+`HKDF(salt || sub || aud, info = scope)`), wraps the dApp-supplied
+message in a wallet-controlled canonical envelope, and signs with the
+sub-key. The signature is byte-deterministic across sessions and
+devices for any given `(identity, scope)`.
+
+When the SDK takes this path:
+
+- It **skips the Ed25519 scheme gate**. The wallet's outer signing
+  scheme (zkLogin, multisig, etc.) is irrelevant; correctness depends
+  on the wallet's *internal* sub-key derivation being byte-stable,
+  which the feature contract requires.
+- It passes scope `whisper-protocol/v1` by default (the
+  `DERIVE_SIGNATURE_FEATURE_SCOPE` constant). Consumers can override
+  this via the `scope` option to
+  `deriveEncryptionKeypairFromWallet`, but doing so changes which
+  wallet sub-key participates in derivation — a different scope will
+  produce a different X25519 keypair, so an override is effectively a
+  key rotation. All Whisper integrations using the default scope agree
+  on the resulting key for a given user.
+- It HKDFs the **signature bytes** the wallet returns. The wrapped
+  `bytes` field and the wallet-returned `publicKey` are surfaced by
+  the wallet feature but **not currently verified by the SDK**. A
+  malicious wallet could in principle return a signature it produced
+  over different bytes than the canonical envelope claims; today this
+  reduces to "the wallet is malicious," which already loses against
+  every signing path. See **Trade-offs** §11b.
+
+For the wallet-side spec see
+[evevault/docs/DERIVE_SIGNATURE.md](https://github.com/0xErgod/evevault/blob/main/docs/DERIVE_SIGNATURE.md)
+in the Eve Vault fork; that's the reference implementation.
+
+### Selection rule
+
+```text
+if wallet exposes "misc:deriveSignature":
+    use Path B
+else:
+    require Ed25519 (refuse Secp256k1, MultiSig, ZkLogin, Passkey)
+    use Path A
+```
+
+A wallet exposing both features in practice should not happen — the
+two are mutually exclusive in their use cases — but if it does, B
+wins. The `misc:deriveSignature` contract is stricter (mandates
+deterministic sub-key derivation), so it's the safer default.
+
+### Cross-path key incompatibility
+
+The two paths produce different X25519 keypairs **for the same user**.
+The derivation HKDF is identical, but the inputs are not: Path A
+HKDFs the wallet's personal-message signature, Path B HKDFs the
+wallet-internal sub-key signature. Different signatures, different
+keys.
+
+This means: a user who derives an encryption keypair via Path A on a
+Slush wallet, then later switches to a zkLogin wallet using Path B,
+will get a *different* key. The on-chain `KeyRegistry` carries one
+current version per Sui address; switching paths is a key rotation
+that requires re-registering and writing a new `key_version`. Old
+envelopes encrypted to the old pubkey can still be decrypted by going
+back to the old wallet (the math is deterministic), but new senders
+will use the new pubkey.
+
+Wallets in the wild today implement at most one of the two features,
+so this is a forward concern rather than a daily-use issue.
+
 ## Derivation
 
 ```text
@@ -252,6 +347,51 @@ caching and a documented XSS threat. Future work: passkey-wrapped cache,
 or the keypair lives in a wallet-side feature (Phase 4 of
 [wallet-bound-private-messaging.md](./wallet-bound-private-messaging.md)).
 
+**11a. Path B inherits a second deterministic-signing dependency.**
+When a wallet implements `misc:deriveSignature`, Whisper's correctness
+depends on **two** byte-stable derivations — its own HKDF pipeline
+and the wallet's internal identity-to-sub-key derivation. The wallet
+spec mandates RFC-8032-compliant Ed25519 signing of a wallet-controlled
+canonical envelope, so a spec-compliant wallet behaves identically
+across machines. But a buggy or malicious implementation can silently
+produce drift — different bytes on different devices — that would
+look exactly like a wallet-signature-drift bug under Path A. Mitigation:
+the wallet-side spec must include byte-stable test vectors (the Eve
+Vault reference does); we should run those vectors as part of CI when
+testing against a specific wallet build.
+
+**11b. SDK does not currently verify Path B's wrapped envelope.**
+`misc:deriveSignature` returns `{ bytes, signature, publicKey }`,
+where `bytes` is the wallet's canonical envelope wrapping the dApp's
+input plus scope and address. A spec-compliant wallet signs `bytes`
+with the sub-key whose pubkey is `publicKey`. The SDK today HKDFs
+only `signature` and ignores both `bytes` and `publicKey`. A malicious
+wallet could return a signature it produced over a different envelope
+than `bytes` claims — but this only matters if we plan to use `bytes`
+as a security boundary (e.g. binding a derived key to an attested
+scope). For the current "HKDF the signature into an X25519 seed" use
+case, the trust boundary is "the wallet is honest about
+deterministically signing for this user under this scope," which is
+the same trust boundary every other path requires. A future hardening
+step is to parse `bytes`, verify it embeds the dApp-supplied message,
+scope, and address verbatim, and verify `signature` against `publicKey`
+over `bytes` before HKDFing — at which point `publicKey` becomes
+load-bearing and a malicious wallet has nowhere to hide. We have not
+done this yet. See Future Work §8.
+
+**11c. No runtime drift detection across calls.**
+Whisper assumes the wallet returns byte-identical signatures every
+time for the same `(identity, message)` (Path A) or `(identity, scope)`
+(Path B). The SDK does not double-sign and compare; doing so would
+double the wallet-prompt UX cost. If a wallet quietly becomes
+non-deterministic — firmware update, plugin swap, an internal bug —
+the user's encryption keypair silently rotates and past envelopes
+become undecryptable until the regression is fixed and the user
+re-signs. Mitigation today is the IndexedDB cache: the first
+derivation is locked in as long as the cache survives. A future
+hardening step would be opt-in periodic re-derivation against the
+cache (re-sign once, compare, surface a warning on mismatch).
+
 **11. Migrations are hard.**
 Changing the derivation (post-quantum scheme, fixing a domain-separator
 bug, swapping HKDF parameters) requires running both schemes in parallel
@@ -290,9 +430,13 @@ the cost of the design and must be visible in user-facing docs.
 
 In rough order of payoff:
 
-1. **Snapshot test the canonical message.** Lock the byte sequence in a
-   test fixture so accidental changes (whitespace, version bump without
-   key bump) fail CI loudly.
+1. ~~**Snapshot test the canonical message.** Lock the byte sequence
+   in a test fixture so accidental changes (whitespace, version bump
+   without key bump) fail CI loudly.~~ **Done.** See
+   `packages/wallet-derived-keys/src/__tests__/crossDevice.golden.test.ts`.
+   The test pins golden X25519 public keys for both Path A and Path B
+   against fixed identity + canonical message inputs, and re-derives
+   the pipeline by hand to catch drift between spec and implementation.
 2. **Passkey-wrapped IndexedDB cache.** Eliminates §10 in exchange for a
    passkey prompt on cold start.
 3. **Optional ratchet layer.** A Signal-style double ratchet on top of
@@ -310,6 +454,17 @@ In rough order of payoff:
 7. **Post-quantum migration plan.** Define the `derivation_id` field and
    the parallel-decryption rules now, before we have envelopes that need
    migrating.
+8. **Verify the Path B wrapped envelope.** Today the SDK trusts the
+   wallet's signature without inspecting `bytes` or verifying
+   `publicKey`. Hardening: parse `bytes`, assert it embeds the
+   dApp-supplied message + scope + address verbatim, verify
+   `signature` against `publicKey` over `bytes`, only then HKDF. Closes
+   trade-off §11b.
+9. **Opt-in drift detection across sessions.** Periodically re-sign
+   the canonical message against the cached keypair and surface a
+   warning on mismatch, so a wallet that became non-deterministic
+   after an update is caught before users lose access. Closes
+   trade-off §11c.
 
 ## Migration from the Current PoC
 
