@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import {
   deriveFromDeterministicSigner,
   deriveFromSignature,
@@ -83,14 +84,14 @@ describe("cross-device stability — sui:signPersonalMessage path", () => {
 
     const result = await deriveFromWalletSigner(signer, CANONICAL_MESSAGE);
 
-    expect(Buffer.from(result.encryptionPublicKey).toString("hex")).toBe(
+    expect(bytesToHex(result.encryptionPublicKey)).toBe(
       PATH_A_GOLDEN_X25519_PUBLIC_KEY_HEX,
     );
     // The canonical message hash is also part of the cross-device
     // contract (it's the cache key). Lock it in.
     expect(result.canonicalMessageDigest.length).toBe(32);
-    expect(Buffer.from(result.canonicalMessageDigest).toString("hex")).toBe(
-      Buffer.from(sha256(messageBytes)).toString("hex"),
+    expect(bytesToHex(result.canonicalMessageDigest)).toBe(
+      bytesToHex(sha256(messageBytes)),
     );
   });
 
@@ -101,11 +102,11 @@ describe("cross-device stability — sui:signPersonalMessage path", () => {
     const a = await deriveFromWalletSigner(sign, CANONICAL_MESSAGE);
     const b = await deriveFromWalletSigner(sign, CANONICAL_MESSAGE);
 
-    expect(Buffer.from(a.encryptionPublicKey).toString("hex")).toBe(
-      Buffer.from(b.encryptionPublicKey).toString("hex"),
+    expect(bytesToHex(a.encryptionPublicKey)).toBe(
+      bytesToHex(b.encryptionPublicKey),
     );
-    expect(Buffer.from(a.encryptionPrivateKey).toString("hex")).toBe(
-      Buffer.from(b.encryptionPrivateKey).toString("hex"),
+    expect(bytesToHex(a.encryptionPrivateKey)).toBe(
+      bytesToHex(b.encryptionPrivateKey),
     );
   });
 
@@ -118,8 +119,8 @@ describe("cross-device stability — sui:signPersonalMessage path", () => {
       ...CANONICAL_MESSAGE,
       version: CURRENT_DERIVATION_VERSION + 1,
     });
-    expect(Buffer.from(original.encryptionPublicKey).toString("hex")).not.toBe(
-      Buffer.from(rotated.encryptionPublicKey).toString("hex"),
+    expect(bytesToHex(original.encryptionPublicKey)).not.toBe(
+      bytesToHex(rotated.encryptionPublicKey),
     );
   });
 });
@@ -157,7 +158,7 @@ describe("cross-device stability — misc:deriveSignature path", () => {
       DERIVE_SIGNATURE_FEATURE_SCOPE,
     );
 
-    expect(Buffer.from(result.encryptionPublicKey).toString("hex")).toBe(
+    expect(bytesToHex(result.encryptionPublicKey)).toBe(
       PATH_B_GOLDEN_X25519_PUBLIC_KEY_HEX,
     );
   });
@@ -167,7 +168,7 @@ describe("cross-device stability — misc:deriveSignature path", () => {
     // deriveFromSignature once the wallet returns. Lock that equivalence
     // in so future refactors can't drift the two paths apart.
     const direct = deriveFromSignature(PATH_B_PINNED_SIGNATURE, CANONICAL_MESSAGE);
-    expect(Buffer.from(direct.encryptionPublicKey).toString("hex")).toBe(
+    expect(bytesToHex(direct.encryptionPublicKey)).toBe(
       PATH_B_GOLDEN_X25519_PUBLIC_KEY_HEX,
     );
   });
@@ -208,8 +209,8 @@ describe("HKDF pipeline integrity", () => {
       CANONICAL_MESSAGE,
     );
 
-    expect(Buffer.from(viaSdk.encryptionPublicKey).toString("hex")).toBe(
-      Buffer.from(pubByHand).toString("hex"),
+    expect(bytesToHex(viaSdk.encryptionPublicKey)).toBe(
+      bytesToHex(pubByHand),
     );
   });
 });

@@ -55,11 +55,23 @@ const message = {
   scope: ROOT_SCOPE,
 };
 
+// Mirrors the shape `sui:signPersonalMessage` actually receives from the
+// SDK. We type this explicitly so test assertions on `call.account` and
+// `call.chain` typecheck — vi.fn cannot infer fields it doesn't see in
+// the destructure pattern of an inline default arg.
+type SignPersonalMessageInput = {
+  message: Uint8Array;
+  account: { address: string; publicKey: ArrayLike<number> };
+  chain?: string;
+};
+
 function makePersonalMessageWallet(
-  signer = vi.fn(async ({ message: bytes }: { message: Uint8Array }) => {
-    expect(bytes).toBeInstanceOf(Uint8Array);
-    return { bytes: toBase64(bytes), signature: toBase64(CANNED_SIGNATURE) };
-  }),
+  signer = vi.fn(
+    async ({ message: bytes }: SignPersonalMessageInput) => {
+      expect(bytes).toBeInstanceOf(Uint8Array);
+      return { bytes: toBase64(bytes), signature: toBase64(CANNED_SIGNATURE) };
+    },
+  ),
 ) {
   return {
     wallet: {
@@ -72,9 +84,14 @@ function makePersonalMessageWallet(
   };
 }
 
+type DeriveSignatureInput = {
+  scope: string;
+  message: Uint8Array;
+};
+
 function makeDeriveSignatureWallet(
   deriver = vi.fn(
-    async ({ scope, message: bytes }: { scope: string; message: Uint8Array }) => {
+    async ({ scope, message: bytes }: DeriveSignatureInput) => {
       expect(typeof scope).toBe("string");
       expect(bytes).toBeInstanceOf(Uint8Array);
       return {
