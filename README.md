@@ -98,7 +98,7 @@ See [specs/](specs/) for full design notes and trade-offs.
 
 ## Releasing
 
-The two npm packages release independently and automatically. There is no manual `npm version` / `git tag` / `git push --tags` step. **The version number, changelog, npm publish, GitHub release, and changelog commit are all driven by the conventional-commit history.**
+The two npm packages release independently and automatically. There is no manual `npm version` / `git tag` / `git push --tags` step. **The version number, npm publish, and GitHub release are all driven by the conventional-commit history.**
 
 To trigger a release, write commits with the right scope and merge them to `main`:
 
@@ -108,19 +108,22 @@ To trigger a release, write commits with the right scope and merge them to `main
 | `fix(sdk): correct decoding bug`        | `@whisper-protocol/sdk` patch release           |
 | `feat(sdk)!: rename WhisperClient API`  | `@whisper-protocol/sdk` **major** release       |
 | `feat(wallet-derived-keys): …`          | `@whisper-protocol/wallet-derived-keys` release |
-| `feat: top-level repo change`           | no release (unscoped)                           |
+| `feat: top-level repo change`           | no release (unscoped — see "Tail risk" below)   |
 | `feat(web): dApp UI tweak`              | no release (web is not published)               |
 | `chore: …` / `ci: …` / `test: …`        | no release                                      |
 
 When the workflow finds commits that warrant a release for a given package, it:
 
 1. Computes the next version from the commit history (semver).
-2. Updates `packages/<pkg>/package.json` and writes / appends `packages/<pkg>/CHANGELOG.md`.
-3. Publishes to npm with provenance (`--provenance` via OIDC, no manual signing).
-4. Creates a GitHub release at the tag `sdk-vX.Y.Z` (or `wallet-derived-vX.Y.Z`) with the changelog body and the npm tarball attached.
-5. Pushes a `chore(<pkg>): release X.Y.Z [skip ci]` commit back to `main` so the version bump persists. The `[skip ci]` keeps the next CI run from running again.
+2. Bumps the version in the published npm tarball's `package.json`. (The on-disk `package.json` on `main` stays at `0.0.0-development` — the canonical version lives in npm + the git tag, not in the working tree.)
+3. Publishes to npm with provenance (via OIDC, no manual signing).
+4. Creates a git tag `sdk-vX.Y.Z` (or `wallet-derived-vX.Y.Z`) and a GitHub release at that tag with the auto-generated release notes.
 
-**Trade-off you accepted by choosing semantic-release**: there is no review gate on the release itself. A `feat(sdk):` commit merged to `main` will publish to npm within ~3 minutes. The protection is at *merge time* — protect `main` so all PRs require green CI before merging, and treat scoped commits as deliberate release intents. To stage a release without publishing, push to a `next` / `alpha` / `beta` branch — semantic-release ships those as pre-releases (`0.2.0-beta.1`).
+**Why not commit the version bump back to `main`?** The `@semantic-release/git` plugin would do that, but it requires bypassing branch protection — the workflow's push of the `chore: release` commit fails the "PR required" / "CI checks required" rules on `main`. We chose to keep branch protection strict and let the canonical version live in tags + on npm instead. This is the standard semantic-release setup for repos with branch protection.
+
+**Trade-off you accepted by choosing semantic-release**: there is no review gate on the release itself. A `feat(sdk):` commit merged to `main` will publish to npm within ~3 minutes. The protection is at *merge time* — branch protection requires PRs and green CI before merging, and treat scoped commits as deliberate release intents. To stage a release without publishing, push to a `next` / `alpha` / `beta` branch — semantic-release ships those as pre-releases (`0.2.0-beta.1`).
+
+**Tail risk on unscoped commits.** An unscoped `feat:` or `fix:` (no `(scope)`) falls through to conventionalcommits' default rules and would trigger a release. Every commit in this repo's history is scoped, so the risk is hypothetical — but worth knowing.
 
 ### Authentication (OIDC trusted publishing)
 
