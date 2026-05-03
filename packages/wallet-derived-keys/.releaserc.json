@@ -12,22 +12,12 @@
           { "scope": "wallet-derived-keys", "type": "fix", "release": "patch" },
           { "scope": "wallet-derived-keys", "type": "perf", "release": "patch" },
           { "scope": "wallet-derived-keys", "type": "refactor", "release": "patch" },
-          { "scope": "wallet-derived-keys", "type": "*", "breaking": true, "release": "major" },
+          { "scope": "wallet-derived-keys", "breaking": true, "release": "major" },
           { "scope": "sdk", "release": false },
           { "scope": "web", "release": false },
           { "scope": "ci", "release": false },
           { "scope": "deps", "release": false },
-          { "scope": "release", "release": false },
-          { "type": "feat", "release": false },
-          { "type": "fix", "release": false },
-          { "type": "perf", "release": false },
-          { "type": "refactor", "release": false },
-          { "type": "docs", "release": false },
-          { "type": "chore", "release": false },
-          { "type": "ci", "release": false },
-          { "type": "test", "release": false },
-          { "type": "style", "release": false },
-          { "type": "build", "release": false }
+          { "scope": "release", "release": false }
         ]
       }
     ],
