@@ -27,6 +27,9 @@
     }
   },
   "scripts": {
+    "gen:networks": "node scripts/generate-networks.mjs",
+    "gen:networks:check": "node scripts/generate-networks.mjs --check",
+    "prebuild": "node scripts/generate-networks.mjs",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rimraf dist"

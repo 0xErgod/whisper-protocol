@@ -28,6 +28,13 @@ jobs:
       - name: install
         run: pnpm install --frozen-lockfile
 
+      # Block PRs that hand-edit packages/sdk/src/networks.ts out of
+      # sync with the canonical networks.json. The generator's --check
+      # mode exits non-zero when the on-disk file would differ from
+      # what it'd write, with a clear "run pnpm gen:networks" message.
+      - name: networks.ts drift check
+        run: pnpm --filter "@whisper-protocol/sdk" run gen:networks:check
+
       - name: typecheck packages
         run: pnpm -r --filter "./packages/*" run typecheck
 

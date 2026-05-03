@@ -143,6 +143,22 @@ jobs:
               fh.write("\n")
           PY
 
+      # The SDK ships a copy of these IDs as TypeScript constants. The
+      # generator regenerates `packages/sdk/src/networks.ts` from the
+      # canonical networks.json so both files stay in sync — the same
+      # generator runs in `prebuild`, and CI's drift check would
+      # otherwise reject our auto-PR.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: regenerate networks.ts
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm --filter "@whisper-protocol/sdk" run gen:networks
+
       - name: open PR with new IDs
         uses: peter-evans/create-pull-request@v6
         with:
