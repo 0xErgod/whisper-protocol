@@ -71,11 +71,25 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
+      # Node 22+ ships npm 10.x, but OIDC publish needs npm 11.5.1+
+      # (otherwise `npm publish` doesn't pass the OIDC token through
+      # to the registry call and fails with ENEEDAUTH). We pin Node 22
+      # for the modern fetch/runtime, and then upgrade npm explicitly
+      # below.
+      #
+      # IMPORTANT: do NOT pass `registry-url` here. setup-node's
+      # registry-url writes a project-local .npmrc with
+      # `${NODE_AUTH_TOKEN}` placeholder, which shadows
+      # @semantic-release/npm's OIDC-set token at publish time and
+      # produces ENEEDAUTH. semantic-release configures the registry
+      # itself.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
+
+      - name: upgrade npm to OIDC-capable version
+        run: npm install -g npm@latest
 
       - name: install
         run: pnpm install --frozen-lockfile
@@ -86,10 +100,10 @@ jobs:
       - name: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # No NPM_TOKEN — semantic-release's npm plugin auto-detects
-          # GitHub Actions' OIDC token via id-token:write and exchanges
-          # it for a short-lived npm publish credential. Provenance is
-          # signed from the same id-token; no NPM_CONFIG_PROVENANCE
-          # needed either.
+          # No NPM_TOKEN, no NODE_AUTH_TOKEN — both would shadow the
+          # OIDC handshake. @semantic-release/npm@13.1+ does the OIDC
+          # token-exchange itself given id-token:write at the job
+          # level, then writes the resulting short-lived token into
+          # npm's runtime config before invoking `npm publish`.
         working-directory: ${{ matrix.package.dir }}
         run: pnpm exec semantic-release
