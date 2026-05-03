@@ -4,6 +4,7 @@ import {
   useSignAndExecuteTransaction,
 } from "@mysten/dapp-kit";
 import { bytesToHex } from "@noble/hashes/utils";
+import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   MODULE,
   normalizeAddress,
@@ -145,27 +146,33 @@ export function Compose({ registry, keys }: Props) {
         plaintext: text,
       });
 
-      const result = await signAndExecute({ transaction: prepared.tx, chain: ACTIVE_CHAIN });
+      const result = await signAndExecute({
+        transaction: prepared.tx,
+        chain: ACTIVE_CHAIN,
+      });
 
       // dapp-kit's default execute path returns digest + raw effects only;
       // pull full effects via the SuiClient for receipt details.
-      const full = await suiClient.waitForTransaction({
+      const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
         digest: result.digest,
         options: { showObjectChanges: true, showEffects: true },
       });
 
-      const status = (full.effects?.status as { status?: string; error?: string } | undefined)
-        ?.status ?? "unknown";
-      if (status !== "success") {
-        const errText = (full.effects?.status as { error?: string } | undefined)?.error;
-        throw new Error(`tx failed (${status})${errText ? `: ${errText}` : ""}`);
+      const execStatus = full.effects?.status;
+      if (!execStatus || execStatus.status !== "success") {
+        const code = execStatus?.status ?? "unknown";
+        const errText = execStatus?.error;
+        throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
       }
 
+      // SuiObjectChange is a discriminated union; the `created` variant
+      // is the only one carrying both `objectType` and `objectId`,
+      // which TS narrows automatically once we test `change.type`.
       let envelopeId: string | null = null;
       const target = `${PACKAGE_ID}::${MODULE}::EncryptedEnvelope`;
       for (const change of full.objectChanges ?? []) {
-        if (change.type === "created" && (change as { objectType?: string }).objectType === target) {
-          envelopeId = (change as { objectId?: string }).objectId ?? null;
+        if (change.type === "created" && change.objectType === target) {
+          envelopeId = change.objectId;
           break;
         }
       }

@@ -48,9 +48,14 @@ jobs:
           exit 1
 
       - name: install sui cli
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag=$(curl -sL --fail \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/MystenLabs/sui/releases?per_page=30" \
             | grep '"tag_name":' \
             | grep -oE 'mainnet-v[0-9.]+' \
@@ -103,16 +108,12 @@ jobs:
             cat out/publish.raw
             exit 1
           }
-          # Strip any non-JSON prefix the CLI may add.
-          python3 -c "import sys, json; t = open('out/publish.raw').read(); s = t.find('{'); print(t[s:])" > out/publish.json
-          PKG=$(python3 -c "import json; j = json.load(open('out/publish.json')); print(next(c['packageId'] for c in j['objectChanges'] if c['type'] == 'published'))")
-          REG=$(python3 -c "import json; j = json.load(open('out/publish.json')); print(next(c['objectId'] for c in j['objectChanges'] if c.get('objectType', '').endswith('::secret_sharing::KeyRegistry')))")
-          DIGEST=$(python3 -c "import json; print(json.load(open('out/publish.json'))['digest'])")
-          DEPLOYER=$(sui client active-address)
-          echo "package_id=$PKG" >> "$GITHUB_OUTPUT"
-          echo "registry_id=$REG" >> "$GITHUB_OUTPUT"
-          echo "tx_digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "deployer=$DEPLOYER" >> "$GITHUB_OUTPUT"
+          # Parsing the raw output (which may have non-JSON prefix lines
+          # the CLI prepends) is delegated to a checked-in script so it
+          # can be unit-tested locally — see scripts/ci/.
+          python3 scripts/ci/extract-publish-ids.py out/publish.raw \
+            >> "$GITHUB_OUTPUT"
+          echo "deployer=$(sui client active-address)" >> "$GITHUB_OUTPUT"
 
       - name: update networks.json
         env:
@@ -121,27 +122,7 @@ jobs:
           REG: ${{ steps.publish.outputs.registry_id }}
           DIG: ${{ steps.publish.outputs.tx_digest }}
           DEP: ${{ steps.publish.outputs.deployer }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, time
-          path = "networks.json"
-          with open(path) as fh:
-              data = json.load(fh)
-          net = os.environ["NETWORK"]
-          data["networks"][net] = {
-              "rpcUrl": data["networks"][net]["rpcUrl"],
-              "packageId": os.environ["PKG"],
-              "registryId": os.environ["REG"],
-              "deployedAtMs": int(time.time() * 1000),
-              "deployer": os.environ["DEP"],
-              "txDigest": os.environ["DIG"],
-              "note": data["networks"][net].get("note"),
-          }
-          with open(path, "w") as fh:
-              json.dump(data, fh, indent=2)
-              fh.write("\n")
-          PY
+        run: python3 scripts/ci/update-networks-json.py
 
       # The SDK ships a copy of these IDs as TypeScript constants. The
       # generator regenerates `packages/sdk/src/networks.ts` from the
