@@ -29,3 +29,8 @@ identity-bar-fixed.png
 
 # pnpm temp
 .pnpm-store/
+
+# Sibling work-tree clones used to develop upstream patches; not part of
+# this repo's workspace. Keep at the repo root only — fork lives at
+# https://github.com/0xErgod/evevault.
+.evevault/
