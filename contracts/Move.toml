@@ -6,3 +6,4 @@ edition = "2024"
 
 [environments]
 localnet = "21d58119"
+tailscale-devnet = "433fa820"
