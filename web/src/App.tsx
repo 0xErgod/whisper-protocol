@@ -9,7 +9,7 @@ import { useDevSession } from "./whisper/useDevSession";
 import type { ActiveAccount, DemoMode, TxExecutor } from "./whisper/session";
 import { RegistryView } from "./components/RegistryView";
 import { Feed } from "./components/Feed";
-import { Compose } from "./components/Compose";
+import { ComposeTabs } from "./components/ComposeTabs";
 import { AuditToggle } from "./components/AuditToggle";
 import { IdentityBar } from "./components/IdentityBar";
 import { RawId } from "./components/RawId";
@@ -206,7 +206,7 @@ export function App() {
       )}
 
       <div className="section">
-        <Compose
+        <ComposeTabs
           registry={registry}
           keys={keysState.keys}
           account={account}
@@ -225,6 +225,7 @@ export function App() {
           loading={loading}
           keys={keysState.keys}
           account={account}
+          txExecutor={txExecutor}
         />
       </div>
 

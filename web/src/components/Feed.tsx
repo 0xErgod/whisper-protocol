@@ -1,21 +1,29 @@
+import { useMemo, useState } from "react";
 import { bytesToHex } from "@noble/hashes/utils";
+import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   assertCanReadEnvelope,
   assertCanReadMultiEnvelope,
+  buildOpenTx,
   normalizeAddress,
   UnsupportedEncryptionSchemeError,
   UnsupportedEnvelopeFormatVersionError,
   tryDecryptUtf8,
   tryDecryptMultiUtf8,
+  verifyOpening,
 } from "@whisper-protocol/sdk";
 import type {
+  FeedCommittedEvent,
   FeedEvent,
   FeedEnvelopeEvent,
   FeedKeyEvent,
   FeedMultiEnvelopeEvent,
+  FeedOpenedEvent,
 } from "@whisper-protocol/sdk/feed";
 import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
-import type { ActiveAccount } from "../whisper/session";
+import type { ActiveAccount, TxExecutor } from "../whisper/session";
+import { PACKAGE_ID, suiClient } from "../whisper/client";
+import { loadOpening } from "../whisper/openings";
 import { RawId } from "./RawId";
 import { gasBreakdownTooltip, shortGas } from "../whisper/gas";
 
@@ -24,6 +32,7 @@ interface Props {
   loading: boolean;
   keys: DerivedEncryptionKeypair | null;
   account: ActiveAccount | null;
+  txExecutor: TxExecutor | null;
 }
 
 function formatRelative(ms: number, now: number): string {
@@ -311,9 +320,182 @@ function MultiEnvelopeRow({
   );
 }
 
-export function Feed({ events, loading, keys, account }: Props) {
+function CommittedRow({
+  ev,
+  now,
+  myAddress,
+  alreadyOpened,
+  txExecutor,
+}: {
+  ev: FeedCommittedEvent;
+  now: number;
+  myAddress: string | null;
+  alreadyOpened: boolean;
+  txExecutor: TxExecutor | null;
+}) {
+  const isMine = !!myAddress && myAddress === ev.author;
+  const stored = isMine ? loadOpening(ev.commitmentId) : null;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function openCommitment() {
+    if (!stored || !txExecutor) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const tx = buildOpenTx({
+        packageId: PACKAGE_ID,
+        commitmentObjectId: ev.commitmentId,
+        encodedSecret: stored.encodedSecret,
+        salt: stored.salt,
+      });
+      const result = await txExecutor(tx);
+      const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
+        digest: result.digest,
+        options: { showEffects: true },
+      });
+      const status = full.effects?.status;
+      if (!status || status.status !== "success") {
+        throw new Error(`tx failed: ${status?.error ?? "unknown"}`);
+      }
+      // Polling will pick up the SecretOpened event on the next tick;
+      // the row will re-render in the "opened" state.
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`row-event kind-commit ${isMine ? "outgoing" : ""} ${alreadyOpened ? "opened-marker" : "locked"}`}>
+      <div className="row-event-side">
+        <span className="row-event-kind">COMMIT · fmt v{ev.formatVersion}</span>
+        <span>{formatRelative(ev.timestampMs, now)}</span>
+        <span className="row-event-gas" title={gasBreakdownTooltip(ev.gas)}>
+          gas {shortGas(ev.gas)}
+        </span>
+      </div>
+      <div className="row-event-body">
+        <div className="bubble">
+          <div className="bubble-header">
+            <span className={`tag ${isMine ? "tag-outgoing" : "tag-locked"}`}>
+              {isMine ? "COMMITTED BY YOU" : "COMMITTED"}
+            </span>
+            <RawId value={ev.author} kind="address" />
+            <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>
+              {ev.schema} · {ev.hashScheme}
+            </span>
+          </div>
+          <div className="bubble-meta">
+            <span>
+              commit <RawId value={ev.commitmentId} kind="envelope" />
+            </span>
+            <span>
+              tx <RawId value={ev.txDigest} kind="tx" />
+            </span>
+          </div>
+          <div className="bubble-body cipher">
+            <code className="receipt-bytes">{bytesToHex(ev.commitment)}</code>
+            {alreadyOpened && (
+              <div style={{ marginTop: "0.4rem", color: "var(--text-faint)" }}>
+                · opened (see opening row below)
+              </div>
+            )}
+            {!alreadyOpened && isMine && stored && (
+              <div style={{ marginTop: "0.5rem", display: "flex", gap: "1ch", alignItems: "center" }}>
+                <button
+                  type="button"
+                  className="identity-action"
+                  onClick={openCommitment}
+                  disabled={busy || !txExecutor}
+                >
+                  {busy ? "opening…" : "open"}
+                </button>
+                <span style={{ color: "var(--text-faint)" }}>
+                  reveal <code>{stored.plaintext.slice(0, 32)}{stored.plaintext.length > 32 ? "…" : ""}</code> + salt
+                </span>
+              </div>
+            )}
+            {!alreadyOpened && isMine && !stored && (
+              <div style={{ marginTop: "0.4rem", color: "var(--bad)" }}>
+                · opening not stored in this browser — cannot open
+              </div>
+            )}
+            {err && <div style={{ marginTop: "0.4rem", color: "var(--bad)" }}>· {err}</div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OpenedRow({
+  ev,
+  now,
+  myAddress,
+}: {
+  ev: FeedOpenedEvent;
+  now: number;
+  myAddress: string | null;
+}) {
+  const isMine = !!myAddress && myAddress === ev.author;
+  const verified = useMemo(
+    () => verifyOpening(ev.encodedSecret, ev.salt, ev.commitment),
+    [ev.encodedSecret, ev.salt, ev.commitment],
+  );
+  const plaintext = useMemo(() => new TextDecoder().decode(ev.encodedSecret), [ev.encodedSecret]);
+
+  return (
+    <div className="row-event kind-commit unlocked">
+      <div className="row-event-side">
+        <span className="row-event-kind">OPEN</span>
+        <span>{formatRelative(ev.timestampMs, now)}</span>
+        <span className="row-event-gas" title={gasBreakdownTooltip(ev.gas)}>
+          gas {shortGas(ev.gas)}
+        </span>
+      </div>
+      <div className="row-event-body">
+        <div className="bubble">
+          <div className="bubble-header">
+            <span className="tag tag-decrypted">{isMine ? "OPENED BY YOU" : "OPENED"}</span>
+            <RawId value={ev.author} kind="address" />
+            <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>
+              {ev.schema} · {ev.hashScheme}
+            </span>
+          </div>
+          <div className="bubble-meta">
+            <span>
+              commit <RawId value={ev.commitmentId} kind="envelope" />
+            </span>
+            <span>
+              tx <RawId value={ev.txDigest} kind="tx" />
+            </span>
+            <span>
+              verify {verified ? (
+                <strong style={{ color: "var(--ok)", fontWeight: "normal" }}>OK</strong>
+              ) : (
+                <strong style={{ color: "var(--bad)", fontWeight: "normal" }}>FAIL</strong>
+              )}
+            </span>
+          </div>
+          <div className="bubble-body plaintext">{plaintext}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Feed({ events, loading, keys, account, txExecutor }: Props) {
   const myAddress = account ? normalizeAddress(account.address) : null;
   const now = Date.now();
+  const openedIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const ev of events) {
+      if (ev.kind === "opened") s.add(ev.commitmentId);
+    }
+    return s;
+  }, [events]);
   return (
     <div>
       <div className="section-title">
@@ -337,6 +519,28 @@ export function Feed({ events, loading, keys, account }: Props) {
                   ev={ev}
                   now={now}
                   isYou={!!myAddress && myAddress === ev.account}
+                />
+              );
+            }
+            if (ev.kind === "committed") {
+              return (
+                <CommittedRow
+                  key={`${ev.commitmentId}-committed`}
+                  ev={ev}
+                  now={now}
+                  myAddress={myAddress}
+                  alreadyOpened={openedIds.has(ev.commitmentId)}
+                  txExecutor={txExecutor}
+                />
+              );
+            }
+            if (ev.kind === "opened") {
+              return (
+                <OpenedRow
+                  key={`${ev.txDigest}-opened`}
+                  ev={ev}
+                  now={now}
+                  myAddress={myAddress}
                 />
               );
             }
