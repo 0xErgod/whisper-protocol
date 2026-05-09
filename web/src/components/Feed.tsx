@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   assertCanReadEnvelope,
   assertCanReadMultiEnvelope,
   buildOpenTx,
+  loadOpeningForCommitment,
   normalizeAddress,
   UnsupportedEncryptionSchemeError,
   UnsupportedEnvelopeFormatVersionError,
@@ -23,7 +24,6 @@ import type {
 import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
 import type { ActiveAccount, TxExecutor } from "../whisper/session";
 import { PACKAGE_ID, suiClient } from "../whisper/client";
-import { loadOpening } from "../whisper/openings";
 import { RawId } from "./RawId";
 import { gasBreakdownTooltip, shortGas } from "../whisper/gas";
 
@@ -320,34 +320,85 @@ function MultiEnvelopeRow({
   );
 }
 
+interface OpeningLookup {
+  state: "loading" | "found" | "missing";
+  encodedSecret?: Uint8Array;
+  salt?: Uint8Array;
+  plaintextPreview?: string;
+}
+
 function CommittedRow({
   ev,
   now,
   myAddress,
   alreadyOpened,
   txExecutor,
+  keys,
 }: {
   ev: FeedCommittedEvent;
   now: number;
   myAddress: string | null;
   alreadyOpened: boolean;
   txExecutor: TxExecutor | null;
+  keys: DerivedEncryptionKeypair | null;
 }) {
   const isMine = !!myAddress && myAddress === ev.author;
-  const stored = isMine ? loadOpening(ev.commitmentId) : null;
+  const [opening, setOpening] = useState<OpeningLookup>({ state: "loading" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // When this is our commitment and we haven't already publicly opened
+  // it, scan our envelope inbox for the matching commitment_opening_v1
+  // payload. The opening was sealed to us in the same PTB that posted
+  // the commitment, so any device with our encryption key can recover
+  // it from chain — no localStorage involved.
+  useEffect(() => {
+    if (!isMine || alreadyOpened || !myAddress || !keys) {
+      setOpening({ state: "missing" });
+      return;
+    }
+    let cancelled = false;
+    setOpening({ state: "loading" });
+    loadOpeningForCommitment(
+      suiClient,
+      PACKAGE_ID,
+      myAddress,
+      keys.encryptionPrivateKey,
+      ev.commitment,
+    )
+      .then((found) => {
+        if (cancelled) return;
+        if (!found) {
+          setOpening({ state: "missing" });
+          return;
+        }
+        const preview = new TextDecoder().decode(found.encodedSecret);
+        setOpening({
+          state: "found",
+          encodedSecret: found.encodedSecret,
+          salt: found.salt,
+          plaintextPreview: preview,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOpening({ state: "missing" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isMine, alreadyOpened, myAddress, keys, ev.commitment, ev.commitmentId]);
+
   async function openCommitment() {
-    if (!stored || !txExecutor) return;
+    if (opening.state !== "found" || !opening.encodedSecret || !opening.salt || !txExecutor) return;
     setBusy(true);
     setErr(null);
     try {
       const tx = buildOpenTx({
         packageId: PACKAGE_ID,
         commitmentObjectId: ev.commitmentId,
-        encodedSecret: stored.encodedSecret,
-        salt: stored.salt,
+        encodedSecret: opening.encodedSecret,
+        salt: opening.salt,
       });
       const result = await txExecutor(tx);
       const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
@@ -402,7 +453,12 @@ function CommittedRow({
                 · opened (see opening row below)
               </div>
             )}
-            {!alreadyOpened && isMine && stored && (
+            {!alreadyOpened && isMine && opening.state === "loading" && (
+              <div style={{ marginTop: "0.4rem", color: "var(--text-faint)" }}>
+                <span className="spinner" /> recovering opening from your envelope inbox…
+              </div>
+            )}
+            {!alreadyOpened && isMine && opening.state === "found" && opening.plaintextPreview && (
               <div style={{ marginTop: "0.5rem", display: "flex", gap: "1ch", alignItems: "center" }}>
                 <button
                   type="button"
@@ -413,13 +469,13 @@ function CommittedRow({
                   {busy ? "opening…" : "open"}
                 </button>
                 <span style={{ color: "var(--text-faint)" }}>
-                  reveal <code>{stored.plaintext.slice(0, 32)}{stored.plaintext.length > 32 ? "…" : ""}</code> + salt
+                  reveal <code>{opening.plaintextPreview.slice(0, 32)}{opening.plaintextPreview.length > 32 ? "…" : ""}</code> + salt
                 </span>
               </div>
             )}
-            {!alreadyOpened && isMine && !stored && (
+            {!alreadyOpened && isMine && opening.state === "missing" && (
               <div style={{ marginTop: "0.4rem", color: "var(--bad)" }}>
-                · opening not stored in this browser — cannot open
+                · no matching commitment_opening_v1 envelope found in your inbox — opening unrecoverable
               </div>
             )}
             {err && <div style={{ marginTop: "0.4rem", color: "var(--bad)" }}>· {err}</div>}
@@ -531,6 +587,7 @@ export function Feed({ events, loading, keys, account, txExecutor }: Props) {
                   myAddress={myAddress}
                   alreadyOpened={openedIds.has(ev.commitmentId)}
                   txExecutor={txExecutor}
+                  keys={keys}
                 />
               );
             }
