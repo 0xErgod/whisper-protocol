@@ -6,6 +6,7 @@ import {
   COMMITMENT_DOMAIN_V1,
   CURRENT_COMMITMENT_FORMAT_VERSION,
   ENCRYPTION_SCHEME,
+  ENCRYPTION_SCHEME_UNIFIED,
   HASH_SCHEME_BLAKE2B_256,
   SCHEMA_COMMITMENT_OPENING_V1,
 } from "../constants.js";
@@ -20,7 +21,7 @@ import {
   prepareCommitWithSelfOpening,
   verifyOpening,
 } from "../commitments.js";
-import { encryptForRecipient } from "../encrypt.js";
+import { encryptForRecipientsV5 } from "../encrypt-unified.js";
 import type { RegistryEntry } from "../registry.js";
 
 describe("encodeTextSecret", () => {
@@ -209,21 +210,21 @@ describe("prepareCommitWithSelfOpening", () => {
 });
 
 describe("loadOpeningForCommitment", () => {
-  it("decrypts the matching self-addressed envelope and ignores wrong-schema and wrong-commitment candidates", async () => {
+  it("decrypts the matching v5 self-envelope and ignores wrong-schema and wrong-commitment candidates", async () => {
     const authorPriv = x25519.utils.randomPrivateKey();
     const authorPub = x25519.getPublicKey(authorPriv);
     const author = "0xa11ce";
+    const PKG = "0x" + "p".padEnd(64, "0").slice(0, 64);
 
     // Three candidates in the inbox:
     //   (a) wrong schema — text_secret_v1 — should be ignored
     //   (b) right schema but opens a DIFFERENT commitment — should be ignored
     //   (c) right schema, right commitment — should be returned
 
-    // (a) text envelope from a friend
-    const envelopeA = encryptForRecipient({
+    // (a) text envelope from a friend (v5, schema = text_secret_v1)
+    const envelopeA = encryptForRecipientsV5({
       senderAddress: "0xfriend",
-      recipientAddress: author,
-      recipientPublicKey: authorPub,
+      recipients: [{ address: author, publicKey: authorPub }],
       plaintext: "hello",
     });
 
@@ -231,10 +232,9 @@ describe("loadOpeningForCommitment", () => {
     const otherSecret = encodeTextSecret("different");
     const otherSalt = new Uint8Array(32).fill(1);
     const otherCommitment = commitmentHash(otherSecret, otherSalt);
-    const envelopeB = encryptForRecipient({
+    const envelopeB = encryptForRecipientsV5({
       senderAddress: author,
-      recipientAddress: author,
-      recipientPublicKey: authorPub,
+      recipients: [{ address: author, publicKey: authorPub }],
       plaintext: encodeOpeningPlaintext({ encodedSecret: otherSecret, salt: otherSalt }),
     });
 
@@ -242,31 +242,50 @@ describe("loadOpeningForCommitment", () => {
     const targetSecret = encodeTextSecret("attack=north");
     const targetSalt = new Uint8Array(32).fill(7);
     const targetCommitment = commitmentHash(targetSecret, targetSalt);
-    const envelopeC = encryptForRecipient({
+    const envelopeC = encryptForRecipientsV5({
       senderAddress: author,
-      recipientAddress: author,
-      recipientPublicKey: authorPub,
+      recipients: [{ address: author, publicKey: authorPub }],
       plaintext: encodeOpeningPlaintext({ encodedSecret: targetSecret, salt: targetSalt }),
     });
 
-    function ownedObjectFor(envId: string, schema: string, sender: string, recipient: string, payload: typeof envelopeA) {
+    function v5EventFor(envId: string, schema: string, sender: string, recipient: string) {
+      return {
+        id: { txDigest: `0xtx-${envId}`, eventSeq: "0" },
+        timestampMs: "0",
+        parsedJson: {
+          envelope_id: envId,
+          format_version: "5",
+          sender,
+          recipients: [recipient],
+          recipient_key_ids: [{ bytes: "0xkey-1" }],
+          recipient_key_versions: ["1"],
+          context: [],
+          schema: Array.from(new TextEncoder().encode(schema)),
+          encryption_scheme: Array.from(new TextEncoder().encode(ENCRYPTION_SCHEME_UNIFIED)),
+        },
+      };
+    }
+
+    function v5ObjectFor(envId: string, schema: string, sender: string, recipient: string, payload: typeof envelopeA) {
       return {
         data: {
           objectId: envId,
           content: {
             dataType: "moveObject",
             fields: {
-              format_version: "2",
+              format_version: "5",
               sender,
-              recipient,
-              recipient_key_id: { bytes: "0xkey-1" },
+              recipients: [recipient],
+              recipient_key_ids: [{ bytes: "0xkey-1" }],
+              recipient_key_versions: ["1"],
               context: [],
               schema: Array.from(new TextEncoder().encode(schema)),
               encryption_scheme: Array.from(new TextEncoder().encode(payload.encryptionScheme)),
-              key_version: "1",
               eph_pubkey: Array.from(payload.ephPubkey),
-              nonce: Array.from(payload.nonce),
+              payload_nonce: Array.from(payload.payloadNonce),
               ciphertext: Array.from(payload.ciphertext),
+              wrapped_keys: payload.wrappedKeys.map((w) => Array.from(w)),
+              wrap_nonces: payload.wrapNonces.map((n) => Array.from(n)),
               created_at_ms: "0",
             },
           },
@@ -275,18 +294,23 @@ describe("loadOpeningForCommitment", () => {
     }
 
     const client = {
-      getOwnedObjects: vi.fn(async () => ({
+      queryEvents: vi.fn(async () => ({
         data: [
-          ownedObjectFor("0xenvA", "text_secret_v1", "0xfriend", author, envelopeA),
-          ownedObjectFor("0xenvB", SCHEMA_COMMITMENT_OPENING_V1, author, author, envelopeB),
-          ownedObjectFor("0xenvC", SCHEMA_COMMITMENT_OPENING_V1, author, author, envelopeC),
+          v5EventFor("0xenvA", "text_secret_v1", "0xfriend", author),
+          v5EventFor("0xenvB", SCHEMA_COMMITMENT_OPENING_V1, author, author),
+          v5EventFor("0xenvC", SCHEMA_COMMITMENT_OPENING_V1, author, author),
         ],
       })),
+      multiGetObjects: vi.fn(async () => [
+        v5ObjectFor("0xenvA", "text_secret_v1", "0xfriend", author, envelopeA),
+        v5ObjectFor("0xenvB", SCHEMA_COMMITMENT_OPENING_V1, author, author, envelopeB),
+        v5ObjectFor("0xenvC", SCHEMA_COMMITMENT_OPENING_V1, author, author, envelopeC),
+      ]),
     };
 
     const found = await loadOpeningForCommitment(
       client as never,
-      "0xpkg",
+      PKG,
       author,
       authorPriv,
       targetCommitment,
@@ -296,23 +320,23 @@ describe("loadOpeningForCommitment", () => {
     expect(bytesToHex(found!.salt)).toBe(bytesToHex(targetSalt));
     expect(found!.envelope.envelopeId).toBe("0xenvC");
 
-    // Sanity: target NOT in inbox returns null.
-    const notFound = await loadOpeningForCommitment(
+    // Asking for the OTHER commitment also resolves correctly.
+    const otherFound = await loadOpeningForCommitment(
       client as never,
-      "0xpkg",
+      PKG,
       author,
       authorPriv,
       otherCommitment,
     );
-    // Actually otherCommitment IS in inbox (envelope B), so this should also succeed.
-    expect(notFound!.envelope.envelopeId).toBe("0xenvB");
+    expect(otherFound!.envelope.envelopeId).toBe("0xenvB");
   });
 
   it("returns null when no envelope matches the target commitment", async () => {
     const authorPriv = x25519.utils.randomPrivateKey();
     const author = "0xa11ce";
     const client = {
-      getOwnedObjects: vi.fn(async () => ({ data: [] })),
+      queryEvents: vi.fn(async () => ({ data: [] })),
+      multiGetObjects: vi.fn(async () => []),
     };
     const targetCommitment = new Uint8Array(32).fill(0xff);
     const result = await loadOpeningForCommitment(

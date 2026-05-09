@@ -4,18 +4,23 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { randomBytes } from "@noble/hashes/utils";
 import { normalizeAddress } from "./address.js";
-import { ENCRYPTION_SCHEME_MULTI, HKDF_INFO_MULTI_WRAP } from "./constants.js";
+import { ENCRYPTION_SCHEME_UNIFIED, HKDF_INFO_WRAP } from "./constants.js";
 
-const INFO_BYTES = new TextEncoder().encode(HKDF_INFO_MULTI_WRAP);
+const INFO_BYTES = new TextEncoder().encode(HKDF_INFO_WRAP);
 
 function deriveWrapKey(
   shared: Uint8Array,
   sender: string,
   recipient: string,
 ): Uint8Array {
-  // Domain-separated from the v2 single-recipient AEAD-key derivation:
-  // "wrap:" prefix means a v3 wrap key for (sender, recipient[i]) cannot
-  // collide with a v2 envelope key for the same pair.
+  // Domain-separated from every prior envelope key derivation:
+  //   v2 used "<sender>-><recipient>"
+  //   v3 used "wrap:<sender>-><recipient>" with HKDF_INFO_MULTI_WRAP
+  //   v5 uses "wrap:<sender>-><recipient>" with HKDF_INFO_WRAP
+  // The info string difference cleanly separates v3 and v5 wrap keys
+  // for the same (sender, recipient) pair, so historical v3 envelopes
+  // remain decryptable under their own suite without colliding with
+  // v5 suite outputs.
   const salt = new TextEncoder().encode(`wrap:${sender}->${recipient}`);
   return hkdf(sha256, shared, salt, INFO_BYTES, 32);
 }
@@ -24,19 +29,19 @@ function asBytes(plaintext: Uint8Array | string): Uint8Array {
   return typeof plaintext === "string" ? new TextEncoder().encode(plaintext) : plaintext;
 }
 
-export interface MultiEncryptRecipient {
+export interface UnifiedEncryptRecipient {
   address: string;
   publicKey: Uint8Array;
 }
 
-export interface MultiEncryptInput {
+export interface UnifiedEncryptInput {
   encryptionScheme?: string;
   senderAddress: string;
-  recipients: MultiEncryptRecipient[];
+  recipients: UnifiedEncryptRecipient[];
   plaintext: Uint8Array | string;
 }
 
-export interface MultiEncryptedPayload {
+export interface UnifiedEncryptedPayload {
   encryptionScheme: string;
   ephPubkey: Uint8Array;
   payloadNonce: Uint8Array;
@@ -45,7 +50,7 @@ export interface MultiEncryptedPayload {
   wrapNonces: Uint8Array[];
 }
 
-export interface MultiDecryptInput {
+export interface UnifiedDecryptInput {
   encryptionScheme?: string;
   senderAddress: string;
   recipientAddress: string;
@@ -57,18 +62,27 @@ export interface MultiDecryptInput {
   wrapNonce: Uint8Array;
 }
 
-export interface MultiRecipientEncryptionSuite {
+export interface UnifiedEncryptionSuite {
   id: string;
-  encrypt(input: MultiEncryptInput): MultiEncryptedPayload;
-  decrypt(input: MultiDecryptInput): Uint8Array | null;
+  encrypt(input: UnifiedEncryptInput): UnifiedEncryptedPayload;
+  decrypt(input: UnifiedDecryptInput): Uint8Array | null;
 }
 
-export const x25519MultiSuite: MultiRecipientEncryptionSuite = {
-  id: ENCRYPTION_SCHEME_MULTI,
+/**
+ * Hybrid construction used by every v5 envelope, including N=1.
+ *
+ * The N=1 case is intentionally NOT special-cased: a degenerate
+ * one-recipient group is the same primitive as a multi-recipient
+ * group. The slight extra work (one HKDF + one AEAD on a 32-byte
+ * message key) is the price of having one cryptographic suite
+ * instead of two.
+ */
+export const x25519UnifiedSuite: UnifiedEncryptionSuite = {
+  id: ENCRYPTION_SCHEME_UNIFIED,
 
-  encrypt(input: MultiEncryptInput): MultiEncryptedPayload {
+  encrypt(input: UnifiedEncryptInput): UnifiedEncryptedPayload {
     if (input.recipients.length === 0) {
-      throw new Error("multi-recipient encrypt requires at least one recipient");
+      throw new Error("v5 envelope encrypt requires at least one recipient");
     }
     const ephPriv = x25519.utils.randomPrivateKey();
     const ephPub = x25519.getPublicKey(ephPriv);
@@ -94,7 +108,7 @@ export const x25519MultiSuite: MultiRecipientEncryptionSuite = {
     }
 
     return {
-      encryptionScheme: ENCRYPTION_SCHEME_MULTI,
+      encryptionScheme: ENCRYPTION_SCHEME_UNIFIED,
       ephPubkey: ephPub,
       payloadNonce,
       ciphertext,
@@ -103,7 +117,7 @@ export const x25519MultiSuite: MultiRecipientEncryptionSuite = {
     };
   },
 
-  decrypt(input: MultiDecryptInput): Uint8Array | null {
+  decrypt(input: UnifiedDecryptInput): Uint8Array | null {
     try {
       const senderHex = normalizeAddress(input.senderAddress);
       const recipientHex = normalizeAddress(input.recipientAddress);

@@ -1,41 +1,30 @@
 export { WhisperClient } from "./client.js";
 export type {
   WhisperClientConfig,
-  PrepareSendArgs,
-  PreparedSend,
-  PrepareSendMultiArgs,
-  PreparedMultiSend,
+  PrepareSendV5Args,
+  PreparedSendV5,
   RecipientKeyResolution,
 } from "./client.js";
 
 export {
-  encryptForRecipient,
-  tryDecrypt,
-  tryDecryptUtf8,
-} from "./encrypt.js";
-export type { EncryptedPayload, EncryptInput, DecryptInput } from "./encrypt.js";
-
-export {
-  encryptForRecipients,
-  tryDecryptMulti,
-  tryDecryptMultiUtf8,
-} from "./encrypt-multi.js";
+  encryptForRecipientsV5,
+  tryDecryptV5,
+  tryDecryptV5Utf8,
+} from "./encrypt-unified.js";
 export type {
-  MultiEncryptInput,
-  MultiEncryptedPayload,
-  MultiDecryptInput,
-  MultiEncryptRecipient,
-  MultiRecipientEncryptionSuite,
-} from "./encrypt-multi.js";
+  UnifiedEncryptInput,
+  UnifiedEncryptedPayload,
+  UnifiedDecryptInput,
+  UnifiedEncryptRecipient,
+  UnifiedEncryptionSuite,
+} from "./encrypt-unified.js";
 
 export {
-  buildPostEnvelopeTx,
-  buildPostMultiEnvelopeTx,
+  buildPostV5EnvelopeTx,
   buildRegisterKeyTx,
 } from "./tx.js";
 export type {
-  BuildPostEnvelopeArgs,
-  BuildPostMultiEnvelopeArgs,
+  BuildPostV5EnvelopeArgs,
   BuildRegisterKeyArgs,
 } from "./tx.js";
 
@@ -47,23 +36,23 @@ export {
 export type { RegistryEntry, EncryptionKeyRecord } from "./registry.js";
 
 export {
-  fetchEnvelope,
-  fetchInbox,
-  canReadEnvelope,
-  assertCanReadEnvelope,
-  decodeEnvelopeFields,
-} from "./envelope.js";
-export type { OnChainEnvelope } from "./envelope.js";
+  fetchV5Envelope,
+  fetchV5Inbox,
+  decodeV5EnvelopeFieldsTyped,
+  recipientIndexInV5Envelope,
+  canReadV5Envelope,
+  assertCanReadV5Envelope,
+} from "./envelope-unified.js";
+export type { OnChainV5Envelope } from "./envelope-unified.js";
 
+// Historical envelope decoders for v1/v2 (single-recipient owned)
+// envelopes from prior deployments. The SDK no longer produces
+// envelopes under this shape; this is read-only legacy support.
 export {
-  fetchMultiEnvelope,
-  fetchMultiInbox,
-  decodeMultiEnvelopeFields,
-  recipientIndexInMultiEnvelope,
-  canReadMultiEnvelope,
-  assertCanReadMultiEnvelope,
-} from "./multi-envelope.js";
-export type { OnChainMultiEnvelope } from "./multi-envelope.js";
+  fetchEnvelope as fetchLegacyV2Envelope,
+  decodeEnvelopeFields as decodeLegacyV2EnvelopeFields,
+} from "./envelope.js";
+export type { OnChainEnvelope as OnChainLegacyV2Envelope } from "./envelope.js";
 
 export {
   encodeTextSecret,
@@ -104,20 +93,21 @@ export {
   MODULE_FACADE,
   MODULE_REGISTRY,
   MODULE_ENVELOPES,
-  MODULE_MULTI_ENVELOPES,
   MODULE_COMMITMENTS,
   CLOCK_ID,
   SCHEMA_TEXT_SECRET_V1,
   SCHEMA_COMMITMENT_OPENING_V1,
   LEGACY_ENVELOPE_FORMAT_VERSION,
+  ENVELOPE_FORMAT_VERSION_V2,
+  ENVELOPE_FORMAT_VERSION_V3,
   CURRENT_ENVELOPE_FORMAT_VERSION,
-  CURRENT_MULTI_ENVELOPE_FORMAT_VERSION,
   CURRENT_COMMITMENT_FORMAT_VERSION,
   MAX_RECIPIENTS,
   ENCRYPTION_SCHEME,
   ENCRYPTION_SCHEME_MULTI,
+  ENCRYPTION_SCHEME_UNIFIED,
   HKDF_INFO,
-  HKDF_INFO_MULTI_WRAP,
+  HKDF_INFO_WRAP,
   HASH_SCHEME_BLAKE2B_256,
   COMMITMENT_DOMAIN_V1,
   SDK_PROTOCOL_VERSION,

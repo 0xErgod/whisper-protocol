@@ -3,7 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   MAX_RECIPIENTS,
-  MODULE,
+  MODULE_ENVELOPES,
   SCHEMA_TEXT_SECRET_V1,
   normalizeAddress,
   type RegistryEntry,
@@ -30,31 +30,7 @@ interface GasInfo {
   netMist: bigint;
 }
 
-interface SingleReceipt {
-  kind: "single";
-  txDigest: string;
-  envelopeId: string | null;
-  formatVersion: number;
-  recipient: string;
-  recipientKeyId: string;
-  keyVersion: number;
-  ephPubkeyHex: string;
-  nonceHex: string;
-  ciphertextHex: string;
-  ciphertextBytes: number;
-  plaintextBytes: number;
-  schema: string;
-  scheme: string;
-  senderAddress: string;
-  package: string;
-  registry: string;
-  module: string;
-  function: string;
-  gas: GasInfo | null;
-}
-
-interface MultiReceipt {
-  kind: "multi";
+interface Receipt {
   txDigest: string;
   envelopeId: string | null;
   formatVersion: number;
@@ -73,8 +49,6 @@ interface MultiReceipt {
   function: string;
   gas: GasInfo | null;
 }
-
-type Receipt = SingleReceipt | MultiReceipt;
 
 function gasFromEffects(summary: {
   computationCost?: string;
@@ -202,107 +176,55 @@ export function Compose({ registry, keys, account, mode, txExecutor }: Props) {
     try {
       if (!txExecutor) throw new Error("no transaction signer available");
 
-      if (isMulti) {
-        const prepared = await whisper.prepareSendMulti({
-          senderAddress: account.address,
-          recipientAddresses: recipients,
-          plaintext: text,
-        });
-        const result = await txExecutor(prepared.tx);
-        const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
-          digest: result.digest,
-          options: { showObjectChanges: true, showEffects: true },
-        });
-        const execStatus = full.effects?.status;
-        if (!execStatus || execStatus.status !== "success") {
-          const code = execStatus?.status ?? "unknown";
-          const errText = execStatus?.error;
-          throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
-        }
-
-        let envelopeId: string | null = null;
-        const target = `${PACKAGE_ID}::${MODULE}::MultiRecipientEnvelope`;
-        for (const change of full.objectChanges ?? []) {
-          if (change.type === "created" && change.objectType === target) {
-            envelopeId = change.objectId;
-            break;
-          }
-        }
-
-        setReceipt({
-          kind: "multi",
-          txDigest: full.digest,
-          envelopeId,
-          formatVersion: prepared.formatVersion,
-          recipients: prepared.recipients.map((r) => ({
-            address: r.account,
-            keyId: r.currentKeyId,
-            keyVersion: r.keyVersion,
-          })),
-          ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
-          payloadNonceHex: bytesToHex(prepared.payload.payloadNonce),
-          ciphertextHex: bytesToHex(prepared.payload.ciphertext),
-          ciphertextBytes: prepared.payload.ciphertext.length,
-          plaintextBytes: new TextEncoder().encode(text).length,
-          schema: SCHEMA_TEXT_SECRET_V1,
-          scheme: prepared.payload.encryptionScheme,
-          senderAddress: account.address,
-          package: PACKAGE_ID,
-          registry: REGISTRY_ID,
-          module: MODULE,
-          function: "post_multi_envelope",
-          gas: gasFromEffects(full.effects?.gasUsed),
-        });
-      } else {
-        const prepared = await whisper.prepareSend({
-          senderAddress: account.address,
-          recipientAddress: recipients[0]!,
-          plaintext: text,
-        });
-        const result = await txExecutor(prepared.tx);
-        const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
-          digest: result.digest,
-          options: { showObjectChanges: true, showEffects: true },
-        });
-        const execStatus = full.effects?.status;
-        if (!execStatus || execStatus.status !== "success") {
-          const code = execStatus?.status ?? "unknown";
-          const errText = execStatus?.error;
-          throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
-        }
-
-        let envelopeId: string | null = null;
-        const target = `${PACKAGE_ID}::${MODULE}::EncryptedEnvelope`;
-        for (const change of full.objectChanges ?? []) {
-          if (change.type === "created" && change.objectType === target) {
-            envelopeId = change.objectId;
-            break;
-          }
-        }
-
-        setReceipt({
-          kind: "single",
-          txDigest: full.digest,
-          envelopeId,
-          formatVersion: prepared.formatVersion,
-          recipient: prepared.recipient.account,
-          recipientKeyId: prepared.recipientKeyId,
-          keyVersion: prepared.keyVersion,
-          ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
-          nonceHex: bytesToHex(prepared.payload.nonce),
-          ciphertextHex: bytesToHex(prepared.payload.ciphertext),
-          ciphertextBytes: prepared.payload.ciphertext.length,
-          plaintextBytes: new TextEncoder().encode(text).length,
-          schema: SCHEMA_TEXT_SECRET_V1,
-          scheme: prepared.payload.encryptionScheme,
-          senderAddress: account.address,
-          package: PACKAGE_ID,
-          registry: REGISTRY_ID,
-          module: MODULE,
-          function: "post_envelope",
-          gas: gasFromEffects(full.effects?.gasUsed),
-        });
+      const prepared = await whisper.prepareSendV5({
+        senderAddress: account.address,
+        recipientAddresses: recipients,
+        plaintext: text,
+      });
+      const result = await txExecutor(prepared.tx);
+      const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
+        digest: result.digest,
+        options: { showObjectChanges: true, showEffects: true },
+      });
+      const execStatus = full.effects?.status;
+      if (!execStatus || execStatus.status !== "success") {
+        const code = execStatus?.status ?? "unknown";
+        const errText = execStatus?.error;
+        throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
       }
+
+      let envelopeId: string | null = null;
+      const target = `${PACKAGE_ID}::${MODULE_ENVELOPES}::Envelope`;
+      for (const change of full.objectChanges ?? []) {
+        if (change.type === "created" && change.objectType === target) {
+          envelopeId = change.objectId;
+          break;
+        }
+      }
+
+      setReceipt({
+        txDigest: full.digest,
+        envelopeId,
+        formatVersion: prepared.formatVersion,
+        recipients: prepared.recipients.map((r: RegistryEntry) => ({
+          address: r.account,
+          keyId: r.currentKeyId,
+          keyVersion: r.keyVersion,
+        })),
+        ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
+        payloadNonceHex: bytesToHex(prepared.payload.payloadNonce),
+        ciphertextHex: bytesToHex(prepared.payload.ciphertext),
+        ciphertextBytes: prepared.payload.ciphertext.length,
+        plaintextBytes: new TextEncoder().encode(text).length,
+        schema: SCHEMA_TEXT_SECRET_V1,
+        scheme: prepared.payload.encryptionScheme,
+        senderAddress: account.address,
+        package: PACKAGE_ID,
+        registry: REGISTRY_ID,
+        module: MODULE_ENVELOPES,
+        function: "post_envelope",
+        gas: gasFromEffects(full.effects?.gasUsed),
+      });
       setText("");
       setRecipients([]);
     } catch (e2) {
@@ -470,27 +392,16 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         <dd>
           <RawId value={receipt.senderAddress} kind="address" forceRaw />
         </dd>
-        {receipt.kind === "single" ? (
-          <>
-            <dt>recipient</dt>
-            <dd>
-              <RawId value={receipt.recipient} kind="address" forceRaw />
-            </dd>
-          </>
-        ) : (
-          <>
-            <dt>recipients ({receipt.recipients.length})</dt>
-            <dd>
-              <ul style={{ margin: 0, paddingLeft: "1.5ch" }}>
-                {receipt.recipients.map((r) => (
-                  <li key={r.address}>
-                    <RawId value={r.address} kind="address" forceRaw /> · key v{r.keyVersion}
-                  </li>
-                ))}
-              </ul>
-            </dd>
-          </>
-        )}
+        <dt>recipients ({receipt.recipients.length})</dt>
+        <dd>
+          <ul style={{ margin: 0, paddingLeft: "1.5ch" }}>
+            {receipt.recipients.map((r) => (
+              <li key={r.address}>
+                <RawId value={r.address} kind="address" forceRaw /> · key v{r.keyVersion}
+              </li>
+            ))}
+          </ul>
+        </dd>
         <dt>move call</dt>
         <dd>
           <RawId value={receipt.package} kind="package" forceRaw />
@@ -500,16 +411,6 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         <dd>
           <RawId value={receipt.registry} kind="registry" forceRaw />
         </dd>
-        {receipt.kind === "single" && (
-          <>
-            <dt>declared key_version</dt>
-            <dd>v{receipt.keyVersion} (asserted on-chain against current registry)</dd>
-            <dt>recipient key ref</dt>
-            <dd>
-              <RawId value={receipt.recipientKeyId} kind="bytes" forceRaw />
-            </dd>
-          </>
-        )}
         <dt>format_version</dt>
         <dd>v{receipt.formatVersion}</dd>
         <dt>schema</dt>
@@ -541,11 +442,9 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         <dd>
           <code className="receipt-bytes">{receipt.ephPubkeyHex}</code>
         </dd>
-        <dt>{receipt.kind === "single" ? "nonce" : "payload nonce"}</dt>
+        <dt>payload nonce</dt>
         <dd>
-          <code className="receipt-bytes">
-            {receipt.kind === "single" ? receipt.nonceHex : receipt.payloadNonceHex}
-          </code>
+          <code className="receipt-bytes">{receipt.payloadNonceHex}</code>
         </dd>
         <dt>ciphertext</dt>
         <dd>

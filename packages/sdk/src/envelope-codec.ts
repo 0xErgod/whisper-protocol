@@ -57,16 +57,28 @@ export function canDecodeEnvelopeFormatVersion(formatVersion: number): boolean {
   return (
     formatVersion === LEGACY_ENVELOPE_FORMAT_VERSION ||
     formatVersion === 2 ||
-    formatVersion === 3
+    formatVersion === 3 ||
+    formatVersion === 5
   );
 }
 
 export function isSingleRecipientEnvelopeFormatVersion(formatVersion: number): boolean {
+  // v1 and v2 had a single recipient field on the envelope. v3 and v5
+  // both use a vector<address> recipient list (v3 multi-recipient
+  // historical, v5 unified). Decoders for those live in their own
+  // modules.
   return formatVersion === LEGACY_ENVELOPE_FORMAT_VERSION || formatVersion === 2;
 }
 
 export function isMultiRecipientEnvelopeFormatVersion(formatVersion: number): boolean {
+  // v3 historical multi-recipient envelopes only — kept as a guard
+  // for the historical decoder. v5 envelopes also have a recipient
+  // list but go through the unified decoder.
   return formatVersion === 3;
+}
+
+export function isUnifiedEnvelopeFormatVersion(formatVersion: number): boolean {
+  return formatVersion === 5;
 }
 
 export function assertSupportedEnvelopeFormatVersion(formatVersion: number): void {

@@ -2,12 +2,12 @@ import { Transaction } from "@mysten/sui/transactions";
 import type { SuiClient } from "@mysten/sui/client";
 import {
   CURRENT_ENVELOPE_FORMAT_VERSION,
-  ENCRYPTION_SCHEME,
+  ENCRYPTION_SCHEME_UNIFIED,
   MODULE_FACADE,
 } from "./constants.js";
 import { WriteCompatibilityError } from "./errors.js";
 import { assertSupportedEnvelopeFormatVersion } from "./envelope-codec.js";
-import { requireEncryptionSuite } from "./suites.js";
+import { requireUnifiedEncryptionSuite } from "./suites-unified.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -67,9 +67,14 @@ export async function assertWriteCompatible(
   options: AssertWriteCompatibleOptions,
 ): Promise<number> {
   const formatVersion = options.formatVersion ?? CURRENT_ENVELOPE_FORMAT_VERSION;
-  const encryptionScheme = options.encryptionScheme ?? ENCRYPTION_SCHEME;
+  const encryptionScheme = options.encryptionScheme ?? ENCRYPTION_SCHEME_UNIFIED;
   assertSupportedEnvelopeFormatVersion(formatVersion);
-  requireEncryptionSuite(encryptionScheme);
+  // Write-compatibility means "can the SDK *write* envelopes the
+  // current package will accept?" Since v5 is the only suite the SDK
+  // produces, the write check looks up the unified registry, not the
+  // historical single-recipient one (which exists only for legacy
+  // reads).
+  requireUnifiedEncryptionSuite(encryptionScheme);
 
   const onChain = await readOnChainProtocolVersion(suiClient, packageId);
   if (onChain !== options.expectedProtocolVersion) {
