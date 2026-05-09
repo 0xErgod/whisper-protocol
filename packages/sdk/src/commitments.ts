@@ -13,9 +13,14 @@ import {
   MODULE_ENVELOPES,
   SCHEMA_COMMITMENT_OPENING_V1,
 } from "./constants.js";
-import { encryptForRecipient, tryDecrypt } from "./encrypt.js";
+import { encryptForRecipientsV5 } from "./encrypt-unified.js";
 import { bytesFromArray, stringFromBytes } from "./envelope-codec.js";
-import { fetchInbox, type OnChainEnvelope } from "./envelope.js";
+import {
+  fetchV5Inbox,
+  recipientIndexInV5Envelope,
+  type OnChainV5Envelope,
+} from "./envelope-unified.js";
+import { requireUnifiedEncryptionSuite } from "./suites-unified.js";
 import type { RegistryEntry } from "./registry.js";
 
 export interface OnChainCommitment {
@@ -261,14 +266,15 @@ export interface PreparedCommitWithSelfOpening {
 /**
  * Build a single Transaction (PTB) that atomically:
  *   1. posts a SecretCommitment with the salted hash of the plaintext
- *   2. posts an EncryptedEnvelope addressed to the author themselves,
- *      with schema=commitment_opening_v1, carrying the `(encoded_secret, salt)`
- *      opening as its plaintext.
+ *   2. posts a v5 Envelope addressed to {author} (recipients.length == 1),
+ *      with schema=commitment_opening_v1, carrying the (encoded_secret, salt)
+ *      opening as its hybrid-encrypted plaintext.
  *
  * The author can later recover the opening from any device that
- * controls the same wallet — no localStorage required. The author can
- * also re-send the opening privately to allies via a separate
- * v2/v3 envelope using the same plaintext payload.
+ * controls the same wallet — no localStorage required. The same
+ * opening plaintext can be re-sent privately to allies by posting a
+ * v5 multi-recipient envelope (recipients > 1) carrying the same
+ * commitment_opening_v1 payload.
  *
  * If either move call aborts, neither lands — atomicity is the whole
  * point.
@@ -288,11 +294,14 @@ export function prepareCommitWithSelfOpening(
   const { commitment, salt } = createCommitment(encodedSecret);
 
   const openingPlaintext = encodeOpeningPlaintext({ encodedSecret, salt });
-  const payload = encryptForRecipient({
-    encryptionScheme: args.authorRegistryEntry.encryptionScheme,
+  const payload = encryptForRecipientsV5({
     senderAddress: author,
-    recipientAddress: author,
-    recipientPublicKey: args.authorRegistryEntry.encryptionPubkey,
+    recipients: [
+      {
+        address: author,
+        publicKey: args.authorRegistryEntry.encryptionPubkey,
+      },
+    ],
     plaintext: openingPlaintext,
   });
 
@@ -313,22 +322,27 @@ export function prepareCommitWithSelfOpening(
     ],
   });
 
-  // Move call 2: post_envelope to self carrying the opening
+  // Move call 2: v5 post_envelope to self carrying the opening
   const openingSchemaBytes = new TextEncoder().encode(SCHEMA_COMMITMENT_OPENING_V1);
+  if (payload.wrappedKeys.length !== 1 || payload.wrapNonces.length !== 1) {
+    throw new Error("internal: self-envelope payload must have exactly one wrapped key");
+  }
   tx.moveCall({
     target: `${args.packageId}::${MODULE_ENVELOPES}::post_envelope`,
     arguments: [
       tx.object(args.registryId),
-      tx.pure.address(author),
+      tx.pure.vector("address", [author]),
+      tx.pure.vector("id", [args.authorRegistryEntry.currentKeyId]),
+      tx.pure.vector("u64", [BigInt(args.authorRegistryEntry.keyVersion)]),
       tx.pure.vector("u8", Array.from(new Uint8Array())),
       tx.pure.vector("u8", Array.from(openingSchemaBytes)),
       tx.pure.u16(CURRENT_ENVELOPE_FORMAT_VERSION),
-      tx.pure.id(args.authorRegistryEntry.currentKeyId),
       tx.pure.vector("u8", Array.from(new TextEncoder().encode(payload.encryptionScheme))),
-      tx.pure.u64(BigInt(args.authorRegistryEntry.keyVersion)),
       tx.pure.vector("u8", Array.from(payload.ephPubkey)),
-      tx.pure.vector("u8", Array.from(payload.nonce)),
+      tx.pure.vector("u8", Array.from(payload.payloadNonce)),
       tx.pure.vector("u8", Array.from(payload.ciphertext)),
+      tx.pure.vector("vector<u8>", [Array.from(payload.wrappedKeys[0]!)]),
+      tx.pure.vector("vector<u8>", [Array.from(payload.wrapNonces[0]!)]),
       tx.object(CLOCK_ID),
     ],
   });
@@ -344,21 +358,23 @@ export function prepareCommitWithSelfOpening(
 
 /**
  * Look up the opening for a given commitment by scanning the author's
- * own envelope inbox.
+ * v5 envelope inbox.
  *
- * The matching strategy is two-step:
+ * The matching strategy:
  *   1. Filter the inbox to envelopes with schema=commitment_opening_v1
- *      where `sender == recipient == ownerAddress` (self-addressed).
- *   2. For each candidate, decrypt → decode the JSON shape → if it's
- *      a valid v1 opening AND `verifyOpening(encodedSecret, salt, commitment)`
- *      matches the target commitment bytes, that's our opening.
+ *      where `sender == ownerAddress` and the owner is among
+ *      `recipients` (handles both self-envelopes and shared-with-me
+ *      openings someone else might forward in the future).
+ *   2. For each candidate, decrypt the wrapped key targeted at the
+ *      owner, decode the JSON opening payload, and check
+ *      `verifyOpening(encodedSecret, salt, commitment)` against the
+ *      target commitment bytes.
  *
- * Note: we deliberately ignore the on-chain tx digest binding here.
- * `verifyOpening` against the target commitment bytes is a strictly
- * stronger check — the commitment hash IS the binding. tx-digest
- * correlation would only matter for distinguishing two equivalent
- * commitments that hash to the same bytes, which is a collision
- * adversaries couldn't construct anyway.
+ * The commitment hash IS the binding — verifyOpening matching is a
+ * strictly stronger check than tx-digest correlation. tx-digest
+ * correlation would only matter for distinguishing two commitments
+ * that hash to the same bytes, which is a collision adversaries
+ * cannot construct.
  */
 export async function loadOpeningForCommitment(
   suiClient: SuiClient,
@@ -366,21 +382,33 @@ export async function loadOpeningForCommitment(
   ownerAddress: string,
   recipientPrivateKey: Uint8Array,
   targetCommitment: Uint8Array,
-): Promise<{ encodedSecret: Uint8Array; salt: Uint8Array; envelope: OnChainEnvelope } | null> {
+): Promise<{ encodedSecret: Uint8Array; salt: Uint8Array; envelope: OnChainV5Envelope } | null> {
   const owner = normalizeAddress(ownerAddress);
-  const inbox = await fetchInbox(suiClient, packageId, owner);
+  const inbox = await fetchV5Inbox(suiClient, packageId, owner);
 
   for (const envelope of inbox) {
     if (envelope.schema !== SCHEMA_COMMITMENT_OPENING_V1) continue;
-    if (envelope.sender !== owner || envelope.recipient !== owner) continue;
-    const plaintext = tryDecrypt({
-      recipientPrivateKey,
+    const idx = recipientIndexInV5Envelope(envelope, owner);
+    if (idx < 0) continue;
+    const wrappedKey = envelope.wrappedKeys[idx];
+    const wrapNonce = envelope.wrapNonces[idx];
+    if (!wrappedKey || !wrapNonce) continue;
+    let suite;
+    try {
+      suite = requireUnifiedEncryptionSuite(envelope.encryptionScheme);
+    } catch {
+      continue;
+    }
+    const plaintext = suite.decrypt({
       encryptionScheme: envelope.encryptionScheme,
       senderAddress: envelope.sender,
-      recipientAddress: envelope.recipient,
+      recipientAddress: owner,
+      recipientPrivateKey,
       ephPubkey: envelope.ephPubkey,
-      nonce: envelope.nonce,
+      payloadNonce: envelope.payloadNonce,
       ciphertext: envelope.ciphertext,
+      wrappedKey,
+      wrapNonce,
     });
     if (!plaintext) continue;
     const opening = decodeOpeningPlaintext(plaintext);

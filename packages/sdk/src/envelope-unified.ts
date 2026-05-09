@@ -1,6 +1,6 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { normalizeAddress } from "./address.js";
-import { MODULE_MULTI_ENVELOPES } from "./constants.js";
+import { MODULE_ENVELOPES } from "./constants.js";
 import {
   assertSupportedEnvelopeFormatVersion,
   bytesArrayFromUnknown,
@@ -8,7 +8,7 @@ import {
   decodeEnvelopeCompatibilityMetadata,
   detectEnvelopeFormatVersion,
   idArrayFromUnknown,
-  isMultiRecipientEnvelopeFormatVersion,
+  isUnifiedEnvelopeFormatVersion,
   numberArrayFromUnknown,
   stringFromBytes,
   type EnvelopeCompatibilityMetadata,
@@ -17,9 +17,16 @@ import {
   UnsupportedEncryptionSchemeError,
   UnsupportedEnvelopeFormatVersionError,
 } from "./errors.js";
-import { supportsMultiEncryptionScheme } from "./suites-multi.js";
+import { supportsUnifiedEncryptionScheme } from "./suites-unified.js";
 
-export interface OnChainMultiEnvelope extends EnvelopeCompatibilityMetadata {
+/**
+ * On-chain shape of a v5 unified envelope.
+ *
+ * One struct, one lifecycle (always frozen), one cryptographic
+ * construction (always hybrid). N=1 is a degenerate group of the
+ * same primitive — no separate single-recipient code path.
+ */
+export interface OnChainV5Envelope extends EnvelopeCompatibilityMetadata {
   envelopeId: string;
   sender: string;
   recipients: string[];
@@ -35,10 +42,10 @@ export interface OnChainMultiEnvelope extends EnvelopeCompatibilityMetadata {
   createdAtMs: number;
 }
 
-function decodeV3MultiEnvelope(
+function decodeV5EnvelopeFields(
   envelopeId: string,
   fields: Record<string, unknown>,
-): OnChainMultiEnvelope {
+): OnChainV5Envelope {
   return {
     envelopeId,
     ...decodeEnvelopeCompatibilityMetadata(fields),
@@ -58,53 +65,59 @@ function decodeV3MultiEnvelope(
   };
 }
 
-export function decodeMultiEnvelopeFields(
+/**
+ * Decode a v5 envelope's on-chain fields into a typed object. Fails
+ * closed if the format version is anything other than 5 — historical
+ * v1/v2/v3 envelopes go through their own decoders so a v3 envelope
+ * can never be silently mis-decoded as v5 or vice versa.
+ */
+export function decodeV5EnvelopeFieldsTyped(
   envelopeId: string,
   fields: Record<string, unknown>,
-): OnChainMultiEnvelope {
+): OnChainV5Envelope {
   const formatVersion = detectEnvelopeFormatVersion(fields);
   assertSupportedEnvelopeFormatVersion(formatVersion);
-  if (!isMultiRecipientEnvelopeFormatVersion(formatVersion)) {
+  if (!isUnifiedEnvelopeFormatVersion(formatVersion)) {
     throw new UnsupportedEnvelopeFormatVersionError(formatVersion);
   }
-  return decodeV3MultiEnvelope(envelopeId, fields);
+  return decodeV5EnvelopeFields(envelopeId, fields);
 }
 
-export function canReadMultiEnvelope(
-  envelope: Pick<OnChainMultiEnvelope, "formatVersion" | "encryptionScheme">,
-): boolean {
-  try {
-    assertCanReadMultiEnvelope(envelope);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function assertCanReadMultiEnvelope(
-  envelope: Pick<OnChainMultiEnvelope, "formatVersion" | "encryptionScheme">,
-): void {
-  assertSupportedEnvelopeFormatVersion(envelope.formatVersion);
-  if (!isMultiRecipientEnvelopeFormatVersion(envelope.formatVersion)) {
-    throw new UnsupportedEnvelopeFormatVersionError(envelope.formatVersion);
-  }
-  if (!supportsMultiEncryptionScheme(envelope.encryptionScheme)) {
-    throw new UnsupportedEncryptionSchemeError(envelope.encryptionScheme);
-  }
-}
-
-export function recipientIndexInMultiEnvelope(
-  envelope: Pick<OnChainMultiEnvelope, "recipients">,
+export function recipientIndexInV5Envelope(
+  envelope: Pick<OnChainV5Envelope, "recipients">,
   address: string,
 ): number {
   const target = normalizeAddress(address);
   return envelope.recipients.findIndex((r) => r === target);
 }
 
-export async function fetchMultiEnvelope(
+export function canReadV5Envelope(
+  envelope: Pick<OnChainV5Envelope, "formatVersion" | "encryptionScheme">,
+): boolean {
+  try {
+    assertCanReadV5Envelope(envelope);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function assertCanReadV5Envelope(
+  envelope: Pick<OnChainV5Envelope, "formatVersion" | "encryptionScheme">,
+): void {
+  assertSupportedEnvelopeFormatVersion(envelope.formatVersion);
+  if (!isUnifiedEnvelopeFormatVersion(envelope.formatVersion)) {
+    throw new UnsupportedEnvelopeFormatVersionError(envelope.formatVersion);
+  }
+  if (!supportsUnifiedEncryptionScheme(envelope.encryptionScheme)) {
+    throw new UnsupportedEncryptionSchemeError(envelope.encryptionScheme);
+  }
+}
+
+export async function fetchV5Envelope(
   suiClient: SuiClient,
   envelopeId: string,
-): Promise<OnChainMultiEnvelope | null> {
+): Promise<OnChainV5Envelope | null> {
   const obj = await suiClient.getObject({
     id: envelopeId,
     options: { showContent: true },
@@ -112,21 +125,30 @@ export async function fetchMultiEnvelope(
   if (!obj.data?.content) return null;
   const f = (obj.data.content as { fields?: Record<string, unknown> }).fields;
   if (!f) return null;
-  return decodeMultiEnvelopeFields(envelopeId, f);
+  return decodeV5EnvelopeFieldsTyped(envelopeId, f);
 }
 
-// v3 envelopes are frozen objects, not owned. Inbox discovery is
-// event-driven: scan MultiEnvelopePosted events filtered by the
-// recipient address, then fetch the underlying objects in bulk.
-export async function fetchMultiInbox(
+/**
+ * Recipient inbox for v5 envelopes.
+ *
+ * v5 envelopes are frozen — there's no single owner — so
+ * `getOwnedObjects` doesn't surface them. Discovery is event-driven:
+ * scan `EnvelopePosted` events filtered by recipient address, then
+ * `multiGetObjects` to fetch the underlying envelopes in bulk.
+ *
+ * This is the same pattern v3 used for multi-recipient envelopes.
+ * For v5 it's universal — direct messages and group messages share
+ * one inbox query path.
+ */
+export async function fetchV5Inbox(
   suiClient: SuiClient,
   packageId: string,
   ownerAddress: string,
   options: { limit?: number } = {},
-): Promise<OnChainMultiEnvelope[]> {
+): Promise<OnChainV5Envelope[]> {
   const target = normalizeAddress(ownerAddress);
   const limit = options.limit ?? 100;
-  const eventType = `${packageId}::${MODULE_MULTI_ENVELOPES}::MultiEnvelopePosted`;
+  const eventType = `${packageId}::${MODULE_ENVELOPES}::EnvelopePosted`;
   const res = await suiClient.queryEvents({
     query: { MoveEventType: eventType },
     limit,
@@ -145,16 +167,17 @@ export async function fetchMultiInbox(
     ids,
     options: { showContent: true },
   });
-  const out: OnChainMultiEnvelope[] = [];
+  const out: OnChainV5Envelope[] = [];
   for (const o of objs) {
     const id = o.data?.objectId;
     if (!id) continue;
     const f = (o.data?.content as { fields?: Record<string, unknown> } | undefined)?.fields;
     if (!f) continue;
     try {
-      out.push(decodeMultiEnvelopeFields(id, f));
+      out.push(decodeV5EnvelopeFieldsTyped(id, f));
     } catch {
-      // Unknown format/scheme — skip rather than fail the whole inbox fetch.
+      // Unknown format / scheme drift — skip rather than fail the
+      // whole inbox fetch.
     }
   }
   out.sort((a, b) => b.createdAtMs - a.createdAtMs);

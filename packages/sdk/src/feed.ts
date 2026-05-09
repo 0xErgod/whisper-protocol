@@ -1,10 +1,7 @@
 import type { SuiClient } from "@mysten/sui/client";
 import {
-  ENCRYPTION_SCHEME,
-  LEGACY_ENVELOPE_FORMAT_VERSION,
   MODULE_COMMITMENTS,
   MODULE_ENVELOPES,
-  MODULE_MULTI_ENVELOPES,
   MODULE_REGISTRY,
 } from "./constants.js";
 import { normalizeAddress } from "./address.js";
@@ -36,27 +33,14 @@ export interface FeedKeyEvent {
   gas: GasInfo | null;
 }
 
+/**
+ * v5 envelope event. The unified primitive: 1..N recipients, hybrid
+ * construction. The legacy `kind: "envelope"` and
+ * `kind: "multi-envelope"` variants from prior protocol versions are
+ * not surfaced by this feed — the current deployment only emits v5.
+ */
 export interface FeedEnvelopeEvent {
   kind: "envelope";
-  txDigest: string;
-  timestampMs: number;
-  envelopeId: string;
-  formatVersion: number;
-  sender: string;
-  recipient: string;
-  recipientKeyId: string | null;
-  context: Uint8Array;
-  schema: string;
-  encryptionScheme: string;
-  keyVersion: number;
-  ephPubkey: Uint8Array;
-  nonce: Uint8Array;
-  ciphertext: Uint8Array;
-  gas: GasInfo | null;
-}
-
-export interface FeedMultiEnvelopeEvent {
-  kind: "multi-envelope";
   txDigest: string;
   timestampMs: number;
   envelopeId: string;
@@ -106,7 +90,6 @@ export interface FeedOpenedEvent {
 export type FeedEvent =
   | FeedKeyEvent
   | FeedEnvelopeEvent
-  | FeedMultiEnvelopeEvent
   | FeedCommittedEvent
   | FeedOpenedEvent;
 
@@ -116,18 +99,7 @@ interface SuiEventEnvelope {
   parsedJson: Record<string, unknown>;
 }
 
-interface SingleEnvelopeSnapshot {
-  kind: "single";
-  formatVersion: number;
-  recipientKeyId: string | null;
-  encryptionScheme: string;
-  ephPubkey: Uint8Array;
-  nonce: Uint8Array;
-  ciphertext: Uint8Array;
-}
-
-interface MultiEnvelopeSnapshot {
-  kind: "multi";
+interface EnvelopeSnapshot {
   formatVersion: number;
   encryptionScheme: string;
   ephPubkey: Uint8Array;
@@ -136,8 +108,6 @@ interface MultiEnvelopeSnapshot {
   wrappedKeys: Uint8Array[];
   wrapNonces: Uint8Array[];
 }
-
-type EnvelopeSnapshot = SingleEnvelopeSnapshot | MultiEnvelopeSnapshot;
 
 async function fetchEnvelopeSnapshots(
   suiClient: SuiClient,
@@ -153,31 +123,15 @@ async function fetchEnvelopeSnapshots(
     if (!o.data?.objectId || !o.data.content) continue;
     const f = (o.data.content as { fields?: Record<string, unknown> }).fields;
     if (!f) continue;
-    const formatVersion = detectEnvelopeFormatVersion(f);
-    if (formatVersion === 3) {
-      out.set(o.data.objectId, {
-        kind: "multi",
-        formatVersion,
-        encryptionScheme: stringFromBytes(f.encryption_scheme),
-        ephPubkey: bytesFromArray(f.eph_pubkey),
-        payloadNonce: bytesFromArray(f.payload_nonce),
-        ciphertext: bytesFromArray(f.ciphertext),
-        wrappedKeys: bytesArrayFromUnknown(f.wrapped_keys),
-        wrapNonces: bytesArrayFromUnknown(f.wrap_nonces),
-      });
-    } else {
-      out.set(o.data.objectId, {
-        kind: "single",
-        formatVersion,
-        recipientKeyId: idFromUnknown(f.recipient_key_id),
-        encryptionScheme: "encryption_scheme" in f
-          ? stringFromBytes(f.encryption_scheme)
-          : ENCRYPTION_SCHEME,
-        ephPubkey: bytesFromArray(f.eph_pubkey),
-        nonce: bytesFromArray(f.nonce),
-        ciphertext: bytesFromArray(f.ciphertext),
-      });
-    }
+    out.set(o.data.objectId, {
+      formatVersion: detectEnvelopeFormatVersion(f),
+      encryptionScheme: stringFromBytes(f.encryption_scheme),
+      ephPubkey: bytesFromArray(f.eph_pubkey),
+      payloadNonce: bytesFromArray(f.payload_nonce),
+      ciphertext: bytesFromArray(f.ciphertext),
+      wrappedKeys: bytesArrayFromUnknown(f.wrapped_keys),
+      wrapNonces: bytesArrayFromUnknown(f.wrap_nonces),
+    });
   }
   return out;
 }
@@ -226,11 +180,10 @@ export async function fetchFeed(
   const limit = options.limit ?? 50;
   const KEY_EVENT_TYPE = `${options.packageId}::${MODULE_REGISTRY}::EncryptionKeyRegistered`;
   const ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE_ENVELOPES}::EnvelopePosted`;
-  const MULTI_ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE_MULTI_ENVELOPES}::MultiEnvelopePosted`;
   const COMMITTED_EVENT_TYPE = `${options.packageId}::${MODULE_COMMITMENTS}::SecretCommitted`;
   const OPENED_EVENT_TYPE = `${options.packageId}::${MODULE_COMMITMENTS}::SecretOpened`;
 
-  const [keyRes, envRes, multiRes, committedRes, openedRes] = await Promise.all([
+  const [keyRes, envRes, committedRes, openedRes] = await Promise.all([
     suiClient.queryEvents({
       query: { MoveEventType: KEY_EVENT_TYPE },
       limit,
@@ -238,11 +191,6 @@ export async function fetchFeed(
     }),
     suiClient.queryEvents({
       query: { MoveEventType: ENVELOPE_EVENT_TYPE },
-      limit,
-      order: "descending",
-    }),
-    suiClient.queryEvents({
-      query: { MoveEventType: MULTI_ENVELOPE_EVENT_TYPE },
       limit,
       order: "descending",
     }),
@@ -258,16 +206,14 @@ export async function fetchFeed(
     }),
   ]);
 
-  const envelopeIds = [
-    ...(envRes.data as SuiEventEnvelope[]).map((e) => String(e.parsedJson.envelope_id ?? "")),
-    ...(multiRes.data as SuiEventEnvelope[]).map((e) => String(e.parsedJson.envelope_id ?? "")),
-  ];
+  const envelopeIds = (envRes.data as SuiEventEnvelope[]).map((e) =>
+    String(e.parsedJson.envelope_id ?? ""),
+  );
   const snapshots = await fetchEnvelopeSnapshots(suiClient, envelopeIds.filter(Boolean));
 
   const allDigests = [
     ...(keyRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
     ...(envRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
-    ...(multiRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
     ...(committedRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
     ...(openedRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
   ];
@@ -293,46 +239,15 @@ export async function fetchFeed(
     const j = e.parsedJson;
     const envelopeId = String(j.envelope_id ?? "");
     const snapshot = snapshots.get(envelopeId);
-    const singleSnapshot = snapshot && snapshot.kind === "single" ? snapshot : null;
-    const formatVersion = "format_version" in j
-      ? Number(j.format_version ?? 0)
-      : singleSnapshot?.formatVersion ?? LEGACY_ENVELOPE_FORMAT_VERSION;
+    const recipients = Array.isArray(j.recipients)
+      ? (j.recipients as unknown[]).map((r) => normalizeAddress(String(r ?? "")))
+      : [];
     return {
       kind: "envelope",
       txDigest: e.id.txDigest,
       timestampMs: Number(e.timestampMs ?? 0),
       envelopeId,
-      formatVersion,
-      sender: normalizeAddress(String(j.sender ?? "")),
-      recipient: normalizeAddress(String(j.recipient ?? "")),
-      recipientKeyId: idFromUnknown(j.recipient_key_id) ?? singleSnapshot?.recipientKeyId ?? null,
-      context: bytesFromArray(j.context),
-      schema: stringFromBytes(j.schema),
-      encryptionScheme: "encryption_scheme" in j
-        ? stringFromBytes(j.encryption_scheme)
-        : singleSnapshot?.encryptionScheme ?? ENCRYPTION_SCHEME,
-      keyVersion: Number(j.key_version ?? 0),
-      ephPubkey: singleSnapshot?.ephPubkey ?? new Uint8Array(),
-      nonce: singleSnapshot?.nonce ?? new Uint8Array(),
-      ciphertext: singleSnapshot?.ciphertext ?? new Uint8Array(),
-      gas: gas.get(e.id.txDigest) ?? null,
-    };
-  });
-
-  const multiEvents: FeedMultiEnvelopeEvent[] = (multiRes.data as SuiEventEnvelope[]).map((e) => {
-    const j = e.parsedJson;
-    const envelopeId = String(j.envelope_id ?? "");
-    const snapshot = snapshots.get(envelopeId);
-    const multiSnapshot = snapshot && snapshot.kind === "multi" ? snapshot : null;
-    const recipients = Array.isArray(j.recipients)
-      ? (j.recipients as unknown[]).map((r) => normalizeAddress(String(r ?? "")))
-      : [];
-    return {
-      kind: "multi-envelope",
-      txDigest: e.id.txDigest,
-      timestampMs: Number(e.timestampMs ?? 0),
-      envelopeId,
-      formatVersion: Number(j.format_version ?? multiSnapshot?.formatVersion ?? 3),
+      formatVersion: Number(j.format_version ?? snapshot?.formatVersion ?? 5),
       sender: normalizeAddress(String(j.sender ?? "")),
       recipients,
       recipientKeyIds: idArrayFromUnknown(j.recipient_key_ids),
@@ -340,11 +255,11 @@ export async function fetchFeed(
       context: bytesFromArray(j.context),
       schema: stringFromBytes(j.schema),
       encryptionScheme: stringFromBytes(j.encryption_scheme),
-      ephPubkey: multiSnapshot?.ephPubkey ?? new Uint8Array(),
-      payloadNonce: multiSnapshot?.payloadNonce ?? new Uint8Array(),
-      ciphertext: multiSnapshot?.ciphertext ?? new Uint8Array(),
-      wrappedKeys: multiSnapshot?.wrappedKeys ?? [],
-      wrapNonces: multiSnapshot?.wrapNonces ?? [],
+      ephPubkey: snapshot?.ephPubkey ?? new Uint8Array(),
+      payloadNonce: snapshot?.payloadNonce ?? new Uint8Array(),
+      ciphertext: snapshot?.ciphertext ?? new Uint8Array(),
+      wrappedKeys: snapshot?.wrappedKeys ?? [],
+      wrapNonces: snapshot?.wrapNonces ?? [],
       gas: gas.get(e.id.txDigest) ?? null,
     };
   });
@@ -385,7 +300,6 @@ export async function fetchFeed(
   const merged: FeedEvent[] = [
     ...keyEvents,
     ...envelopeEvents,
-    ...multiEvents,
     ...committedEvents,
     ...openedEvents,
   ];

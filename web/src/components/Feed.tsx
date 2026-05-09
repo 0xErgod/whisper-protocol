@@ -2,15 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
-  assertCanReadEnvelope,
-  assertCanReadMultiEnvelope,
+  assertCanReadV5Envelope,
   buildOpenTx,
   loadOpeningForCommitment,
   normalizeAddress,
   UnsupportedEncryptionSchemeError,
   UnsupportedEnvelopeFormatVersionError,
-  tryDecryptUtf8,
-  tryDecryptMultiUtf8,
+  tryDecryptV5Utf8,
   verifyOpening,
 } from "@whisper-protocol/sdk";
 import type {
@@ -18,7 +16,6 @@ import type {
   FeedEvent,
   FeedEnvelopeEvent,
   FeedKeyEvent,
-  FeedMultiEnvelopeEvent,
   FeedOpenedEvent,
 } from "@whisper-protocol/sdk/feed";
 import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
@@ -92,129 +89,20 @@ function EnvelopeRow({
   keys: DerivedEncryptionKeypair | null;
 }) {
   const isOutgoing = !!myAddress && myAddress === ev.sender;
-  const isIncoming = !!myAddress && myAddress === ev.recipient;
-  let unsupportedReason: string | null = null;
-
-  let plaintext: string | null = null;
-  if (isIncoming && keys) {
-    try {
-      assertCanReadEnvelope(ev);
-      plaintext = tryDecryptUtf8({
-        recipientPrivateKey: keys.encryptionPrivateKey,
-        encryptionScheme: ev.encryptionScheme,
-        senderAddress: ev.sender,
-        recipientAddress: ev.recipient,
-        ephPubkey: ev.ephPubkey,
-        nonce: ev.nonce,
-        ciphertext: ev.ciphertext,
-      });
-    } catch (error: unknown) {
-      if (error instanceof UnsupportedEnvelopeFormatVersionError) {
-        unsupportedReason = `unsupported format_version v${error.formatVersion}`;
-      } else if (error instanceof UnsupportedEncryptionSchemeError) {
-        unsupportedReason = `unsupported suite ${error.encryptionScheme}`;
-      } else {
-        unsupportedReason = "unsupported envelope";
-      }
-    }
-  }
-
-  let stateClass = "locked";
-  let bubbleClass = "bubble locked";
-  let tagText = "ENCRYPTED";
-  let tagClass = "tag tag-locked";
-  if (isOutgoing) {
-    stateClass = "outgoing";
-    bubbleClass = "bubble";
-    tagText = "SENT BY YOU";
-    tagClass = "tag tag-outgoing";
-  } else if (plaintext !== null) {
-    stateClass = "unlocked";
-    bubbleClass = "bubble";
-    tagText = "DECRYPTED FOR YOU";
-    tagClass = "tag tag-decrypted";
-  }
-
-  return (
-    <div className={`row-event kind-envelope ${stateClass}`}>
-      <div className="row-event-side">
-        <span className="row-event-kind">ENV · fmt v{ev.formatVersion} · key v{ev.keyVersion}</span>
-        <span>{formatRelative(ev.timestampMs, now)}</span>
-        <span className="row-event-gas" title={gasBreakdownTooltip(ev.gas)}>
-          gas {shortGas(ev.gas)}
-        </span>
-      </div>
-      <div className="row-event-body">
-        <div className={bubbleClass}>
-          <div className="bubble-header">
-            <span className={tagClass}>{tagText}</span>
-            <RawId value={ev.sender} kind="address" />
-            <span className="arrow">→</span>
-            <RawId value={ev.recipient} kind="address" />
-            <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>
-              {ev.schema} · {ev.encryptionScheme}
-            </span>
-          </div>
-          <div className="bubble-meta">
-            <span>
-              env <RawId value={ev.envelopeId} kind="envelope" />
-            </span>
-            <span>
-              tx <RawId value={ev.txDigest} kind="tx" />
-            </span>
-          </div>
-          {isOutgoing ? (
-            <div className="bubble-body outgoing">
-              <em style={{ fontStyle: "normal", color: "var(--text-dim)" }}>
-                you authored this; the plaintext is not on chain. preview only available to the recipient.
-              </em>
-            </div>
-          ) : plaintext !== null ? (
-            <div className="bubble-body plaintext">{plaintext}</div>
-          ) : unsupportedReason ? (
-            <div className="bubble-body cipher">
-              <strong style={{ fontWeight: "normal" }}>cannot decrypt</strong>
-              <div style={{ marginTop: "0.4rem", color: "var(--text-faint)" }}>
-                · {unsupportedReason}
-              </div>
-            </div>
-          ) : (
-            <div className="bubble-body cipher" title="raw ciphertext (AEAD-protected)">
-              {ciphertextPreview(ev.ciphertext)}
-              {myAddress && ev.ciphertext.length > 0 && !isIncoming && (
-                <div style={{ marginTop: "0.4rem", color: "var(--text-faint)" }}>
-                  · not addressed to you · cannot derive AEAD key
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MultiEnvelopeRow({
-  ev,
-  now,
-  myAddress,
-  keys,
-}: {
-  ev: FeedMultiEnvelopeEvent;
-  now: number;
-  myAddress: string | null;
-  keys: DerivedEncryptionKeypair | null;
-}) {
-  const isOutgoing = !!myAddress && myAddress === ev.sender;
   const myIndex = myAddress ? ev.recipients.indexOf(myAddress) : -1;
   const isIncoming = myIndex >= 0;
   let unsupportedReason: string | null = null;
 
   let plaintext: string | null = null;
-  if (isIncoming && keys && ev.wrappedKeys.length > myIndex && ev.wrapNonces.length > myIndex) {
+  if (
+    isIncoming &&
+    keys &&
+    ev.wrappedKeys.length > myIndex &&
+    ev.wrapNonces.length > myIndex
+  ) {
     try {
-      assertCanReadMultiEnvelope(ev);
-      plaintext = tryDecryptMultiUtf8({
+      assertCanReadV5Envelope(ev);
+      plaintext = tryDecryptV5Utf8({
         recipientPrivateKey: keys.encryptionPrivateKey,
         encryptionScheme: ev.encryptionScheme,
         senderAddress: ev.sender,
@@ -243,7 +131,9 @@ function MultiEnvelopeRow({
   if (isOutgoing) {
     stateClass = "outgoing";
     bubbleClass = "bubble";
-    tagText = `SENT BY YOU TO ${ev.recipients.length}`;
+    tagText = ev.recipients.length === 1
+      ? "SENT BY YOU"
+      : `SENT BY YOU TO ${ev.recipients.length}`;
     tagClass = "tag tag-outgoing";
   } else if (plaintext !== null) {
     stateClass = "unlocked";
@@ -253,10 +143,10 @@ function MultiEnvelopeRow({
   }
 
   return (
-    <div className={`row-event kind-envelope kind-multi ${stateClass}`}>
+    <div className={`row-event kind-envelope ${stateClass}`}>
       <div className="row-event-side">
         <span className="row-event-kind">
-          MULTI · fmt v{ev.formatVersion} · {ev.recipients.length} recipients
+          ENV · fmt v{ev.formatVersion} · {ev.recipients.length} recipient{ev.recipients.length === 1 ? "" : "s"}
         </span>
         <span>{formatRelative(ev.timestampMs, now)}</span>
         <span className="row-event-gas" title={gasBreakdownTooltip(ev.gas)}>
@@ -309,7 +199,7 @@ function MultiEnvelopeRow({
               {ciphertextPreview(ev.ciphertext)}
               {myAddress && ev.ciphertext.length > 0 && !isIncoming && (
                 <div style={{ marginTop: "0.4rem", color: "var(--text-faint)" }}>
-                  · you are not in the recipient set · cannot derive any wrap key
+                  · not addressed to you · cannot derive AEAD key
                 </div>
               )}
             </div>
@@ -598,17 +488,6 @@ export function Feed({ events, loading, keys, account, txExecutor }: Props) {
                   ev={ev}
                   now={now}
                   myAddress={myAddress}
-                />
-              );
-            }
-            if (ev.kind === "multi-envelope") {
-              return (
-                <MultiEnvelopeRow
-                  key={ev.envelopeId || ev.txDigest}
-                  ev={ev}
-                  now={now}
-                  myAddress={myAddress}
-                  keys={keys}
                 />
               );
             }
