@@ -1,0 +1,433 @@
+/// Multi-recipient encrypted envelopes (`format_version = 3`).
+///
+/// Hybrid encryption: one ciphertext encrypted under a random K_msg,
+/// plus N parallel `wrapped_keys[i]` / `wrap_nonces[i]` arrays — each
+/// wrap encrypts K_msg for one recipient via X25519 ECDH + HKDF +
+/// ChaCha20-Poly1305 with a domain-separated salt (handled
+/// client-side).
+///
+/// v3 envelopes are frozen objects, not owned by a single recipient,
+/// so all listed recipients can read. Inbox discovery is event-driven
+/// via `MultiEnvelopePosted`.
+///
+/// We deliberately do NOT enforce
+/// `entry.encryption_scheme == envelope.encryption_scheme` here. The
+/// recipient's registered single-recipient suite identifier and the
+/// envelope's multi-wrap suite identifier legitimately differ; both
+/// share the X25519 KEM. KEM compatibility is enforced client-side.
+module secret_sharing_poc::multi_envelopes;
+
+use sui::clock::{Self, Clock};
+use sui::event;
+
+use secret_sharing_poc::registry::{Self, KeyRegistry};
+
+const E_EMPTY_FIELD: u64 = 0;
+const E_TOO_LARGE: u64 = 1;
+const E_RECIPIENT_NOT_REGISTERED: u64 = 2;
+const E_STALE_KEY_VERSION: u64 = 3;
+const E_UNSUPPORTED_FORMAT_VERSION: u64 = 4;
+const E_STALE_KEY_REFERENCE: u64 = 5;
+const E_RECIPIENT_ARITY_MISMATCH: u64 = 7;
+const E_DUPLICATE_RECIPIENT: u64 = 8;
+
+const CURRENT_MULTI_ENVELOPE_FORMAT_VERSION: u16 = 3;
+
+const MAX_SCHEME_BYTES: u64 = 128;
+const MAX_SCHEMA_BYTES: u64 = 64;
+const MAX_CONTEXT_BYTES: u64 = 64;
+const MAX_EPHEMERAL_KEY_BYTES: u64 = 128;
+const MAX_NONCE_BYTES: u64 = 64;
+const MAX_CIPHERTEXT_BYTES: u64 = 4096;
+const MAX_RECIPIENTS: u64 = 8;
+const MAX_WRAPPED_KEY_BYTES: u64 = 256;
+
+public struct MultiRecipientEnvelope has key, store {
+    id: UID,
+    format_version: u16,
+    sender: address,
+    recipients: vector<address>,
+    recipient_key_ids: vector<ID>,
+    recipient_key_versions: vector<u64>,
+    context: vector<u8>,
+    schema: vector<u8>,
+    encryption_scheme: vector<u8>,
+    eph_pubkey: vector<u8>,
+    payload_nonce: vector<u8>,
+    ciphertext: vector<u8>,
+    wrapped_keys: vector<vector<u8>>,
+    wrap_nonces: vector<vector<u8>>,
+    created_at_ms: u64,
+}
+
+public struct MultiEnvelopePosted has copy, drop {
+    envelope_id: ID,
+    format_version: u16,
+    sender: address,
+    recipients: vector<address>,
+    recipient_key_ids: vector<ID>,
+    recipient_key_versions: vector<u64>,
+    context: vector<u8>,
+    schema: vector<u8>,
+    encryption_scheme: vector<u8>,
+    created_at_ms: u64,
+}
+
+public fun current_multi_envelope_format_version(): u16 { CURRENT_MULTI_ENVELOPE_FORMAT_VERSION }
+
+public fun max_recipients(): u64 { MAX_RECIPIENTS }
+
+entry fun post_multi_envelope(
+    registry: &KeyRegistry,
+    recipients: vector<address>,
+    recipient_key_ids: vector<ID>,
+    recipient_key_versions: vector<u64>,
+    context: vector<u8>,
+    schema: vector<u8>,
+    format_version: u16,
+    encryption_scheme: vector<u8>,
+    eph_pubkey: vector<u8>,
+    payload_nonce: vector<u8>,
+    ciphertext: vector<u8>,
+    wrapped_keys: vector<vector<u8>>,
+    wrap_nonces: vector<vector<u8>>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(format_version == CURRENT_MULTI_ENVELOPE_FORMAT_VERSION, E_UNSUPPORTED_FORMAT_VERSION);
+
+    let sender = tx_context::sender(ctx);
+    let created_at_ms = clock::timestamp_ms(clock);
+    let (envelope, posted) = build_multi_envelope_v3(
+        registry,
+        sender,
+        recipients,
+        recipient_key_ids,
+        recipient_key_versions,
+        context,
+        schema,
+        encryption_scheme,
+        eph_pubkey,
+        payload_nonce,
+        ciphertext,
+        wrapped_keys,
+        wrap_nonces,
+        created_at_ms,
+        ctx,
+    );
+
+    event::emit(posted);
+    transfer::freeze_object(envelope);
+}
+
+fun build_multi_envelope_v3(
+    registry: &KeyRegistry,
+    sender: address,
+    recipients: vector<address>,
+    recipient_key_ids: vector<ID>,
+    recipient_key_versions: vector<u64>,
+    context: vector<u8>,
+    schema: vector<u8>,
+    encryption_scheme: vector<u8>,
+    eph_pubkey: vector<u8>,
+    payload_nonce: vector<u8>,
+    ciphertext: vector<u8>,
+    wrapped_keys: vector<vector<u8>>,
+    wrap_nonces: vector<vector<u8>>,
+    created_at_ms: u64,
+    ctx: &mut TxContext,
+): (MultiRecipientEnvelope, MultiEnvelopePosted) {
+    assert_non_empty_and_max(&schema, MAX_SCHEMA_BYTES);
+    assert_non_empty_and_max(&encryption_scheme, MAX_SCHEME_BYTES);
+    assert_non_empty_and_max(&eph_pubkey, MAX_EPHEMERAL_KEY_BYTES);
+    assert_non_empty_and_max(&payload_nonce, MAX_NONCE_BYTES);
+    assert_non_empty_and_max(&ciphertext, MAX_CIPHERTEXT_BYTES);
+    assert!(context.length() <= MAX_CONTEXT_BYTES, E_TOO_LARGE);
+
+    let n = recipients.length();
+    assert!(n > 0, E_EMPTY_FIELD);
+    assert!(n <= MAX_RECIPIENTS, E_TOO_LARGE);
+    assert!(recipient_key_ids.length() == n, E_RECIPIENT_ARITY_MISMATCH);
+    assert!(recipient_key_versions.length() == n, E_RECIPIENT_ARITY_MISMATCH);
+    assert!(wrapped_keys.length() == n, E_RECIPIENT_ARITY_MISMATCH);
+    assert!(wrap_nonces.length() == n, E_RECIPIENT_ARITY_MISMATCH);
+
+    let mut i = 0;
+    while (i < n) {
+        let recipient = *recipients.borrow(i);
+        let claimed_key_id = *recipient_key_ids.borrow(i);
+        let claimed_key_version = *recipient_key_versions.borrow(i);
+
+        assert!(registry::has_entry(registry, recipient), E_RECIPIENT_NOT_REGISTERED);
+        let entry = registry::current_key(registry, recipient);
+        assert!(registry::key_version_of(entry) == claimed_key_version, E_STALE_KEY_VERSION);
+        assert!(registry::current_key_id_of(entry) == claimed_key_id, E_STALE_KEY_REFERENCE);
+
+        // Reject duplicate recipients in the same envelope. The check is
+        // O(n^2) but bounded by MAX_RECIPIENTS so worst-case work is small.
+        let mut j = 0;
+        while (j < i) {
+            assert!(*recipients.borrow(j) != recipient, E_DUPLICATE_RECIPIENT);
+            j = j + 1;
+        };
+
+        assert_non_empty_and_max(wrapped_keys.borrow(i), MAX_WRAPPED_KEY_BYTES);
+        assert_non_empty_and_max(wrap_nonces.borrow(i), MAX_NONCE_BYTES);
+
+        i = i + 1;
+    };
+
+    let envelope = MultiRecipientEnvelope {
+        id: object::new(ctx),
+        format_version: CURRENT_MULTI_ENVELOPE_FORMAT_VERSION,
+        sender,
+        recipients,
+        recipient_key_ids,
+        recipient_key_versions,
+        context,
+        schema,
+        encryption_scheme,
+        eph_pubkey,
+        payload_nonce,
+        ciphertext,
+        wrapped_keys,
+        wrap_nonces,
+        created_at_ms,
+    };
+    let envelope_id = object::id(&envelope);
+    let posted = MultiEnvelopePosted {
+        envelope_id,
+        format_version: envelope.format_version,
+        sender,
+        recipients: copy envelope.recipients,
+        recipient_key_ids: copy envelope.recipient_key_ids,
+        recipient_key_versions: copy envelope.recipient_key_versions,
+        context: copy envelope.context,
+        schema: copy envelope.schema,
+        encryption_scheme: copy envelope.encryption_scheme,
+        created_at_ms,
+    };
+
+    (envelope, posted)
+}
+
+fun assert_non_empty_and_max(bytes: &vector<u8>, max: u64) {
+    let len = bytes.length();
+    assert!(len > 0, E_EMPTY_FIELD);
+    assert!(len <= max, E_TOO_LARGE);
+}
+
+#[test_only]
+use secret_sharing_poc::registry::{new_registry, register_encryption_key_for_test};
+
+#[test]
+fun build_v3_multi_envelope_carries_all_recipients() {
+    let ctx = &mut tx_context::dummy();
+    let mut registry = new_registry(ctx);
+    let bob_key = register_encryption_key_for_test(
+        &mut registry,
+        @0xB,
+        b"x25519",
+        b"pubkey-bob",
+        10,
+        ctx,
+    );
+    let charlie_key = register_encryption_key_for_test(
+        &mut registry,
+        @0xC,
+        b"x25519",
+        b"pubkey-charlie",
+        10,
+        ctx,
+    );
+    let bob_key_id = object::id(&bob_key);
+    let charlie_key_id = object::id(&charlie_key);
+
+    let (envelope, posted) = build_multi_envelope_v3(
+        &registry,
+        @0xA,
+        vector[@0xB, @0xC],
+        vector[bob_key_id, charlie_key_id],
+        vector[1, 1],
+        b"ctx",
+        b"schema",
+        b"x25519",
+        b"eph",
+        b"payload-nonce",
+        b"payload-ct",
+        vector[b"wrapped-bob", b"wrapped-charlie"],
+        vector[b"wrap-nonce-bob", b"wrap-nonce-charlie"],
+        55,
+        ctx,
+    );
+
+    assert!(envelope.format_version == CURRENT_MULTI_ENVELOPE_FORMAT_VERSION, 200);
+    assert!(envelope.recipients.length() == 2, 201);
+    assert!(*envelope.recipients.borrow(0) == @0xB, 202);
+    assert!(*envelope.recipients.borrow(1) == @0xC, 203);
+    assert!(*envelope.recipient_key_ids.borrow(0) == bob_key_id, 204);
+    assert!(*envelope.recipient_key_ids.borrow(1) == charlie_key_id, 205);
+    assert!(envelope.wrapped_keys.length() == 2, 206);
+    assert!(posted.recipients.length() == 2, 207);
+    assert!(posted.format_version == envelope.format_version, 208);
+
+    transfer::public_transfer(bob_key, @0xB);
+    transfer::public_transfer(charlie_key, @0xC);
+    transfer::freeze_object(envelope);
+    transfer::public_transfer(registry, @0xA);
+}
+
+#[test, expected_failure(abort_code = E_RECIPIENT_ARITY_MISMATCH)]
+fun v3_arity_mismatch_is_rejected() {
+    let ctx = &mut tx_context::dummy();
+    let mut registry = new_registry(ctx);
+    let bob_key = register_encryption_key_for_test(
+        &mut registry,
+        @0xB,
+        b"x25519",
+        b"pubkey-bob",
+        10,
+        ctx,
+    );
+    let bob_key_id = object::id(&bob_key);
+
+    let (envelope, _posted) = build_multi_envelope_v3(
+        &registry,
+        @0xA,
+        vector[@0xB, @0xB],
+        vector[bob_key_id, bob_key_id],
+        vector[1, 1],
+        b"ctx",
+        b"schema",
+        b"x25519",
+        b"eph",
+        b"payload-nonce",
+        b"payload-ct",
+        vector[b"wrapped-only-one"],
+        vector[b"wrap-nonce-bob", b"wrap-nonce-bob"],
+        55,
+        ctx,
+    );
+
+    transfer::public_transfer(bob_key, @0xB);
+    transfer::freeze_object(envelope);
+    transfer::public_transfer(registry, @0xA);
+}
+
+#[test, expected_failure(abort_code = E_DUPLICATE_RECIPIENT)]
+fun v3_duplicate_recipients_are_rejected() {
+    let ctx = &mut tx_context::dummy();
+    let mut registry = new_registry(ctx);
+    let bob_key = register_encryption_key_for_test(
+        &mut registry,
+        @0xB,
+        b"x25519",
+        b"pubkey-bob",
+        10,
+        ctx,
+    );
+    let bob_key_id = object::id(&bob_key);
+
+    let (envelope, _posted) = build_multi_envelope_v3(
+        &registry,
+        @0xA,
+        vector[@0xB, @0xB],
+        vector[bob_key_id, bob_key_id],
+        vector[1, 1],
+        b"ctx",
+        b"schema",
+        b"x25519",
+        b"eph",
+        b"payload-nonce",
+        b"payload-ct",
+        vector[b"wrapped-bob-1", b"wrapped-bob-2"],
+        vector[b"wrap-nonce-1", b"wrap-nonce-2"],
+        55,
+        ctx,
+    );
+
+    transfer::public_transfer(bob_key, @0xB);
+    transfer::freeze_object(envelope);
+    transfer::public_transfer(registry, @0xA);
+}
+
+#[test, expected_failure(abort_code = E_TOO_LARGE)]
+fun v3_too_many_recipients_is_rejected() {
+    let ctx = &mut tx_context::dummy();
+    let mut registry = new_registry(ctx);
+    let r0 = register_encryption_key_for_test(&mut registry, @0xB0, b"x25519", b"pk-0", 10, ctx);
+    let r1 = register_encryption_key_for_test(&mut registry, @0xB1, b"x25519", b"pk-1", 10, ctx);
+    let r2 = register_encryption_key_for_test(&mut registry, @0xB2, b"x25519", b"pk-2", 10, ctx);
+    let r3 = register_encryption_key_for_test(&mut registry, @0xB3, b"x25519", b"pk-3", 10, ctx);
+    let r4 = register_encryption_key_for_test(&mut registry, @0xB4, b"x25519", b"pk-4", 10, ctx);
+    let r5 = register_encryption_key_for_test(&mut registry, @0xB5, b"x25519", b"pk-5", 10, ctx);
+    let r6 = register_encryption_key_for_test(&mut registry, @0xB6, b"x25519", b"pk-6", 10, ctx);
+    let r7 = register_encryption_key_for_test(&mut registry, @0xB7, b"x25519", b"pk-7", 10, ctx);
+    let r8 = register_encryption_key_for_test(&mut registry, @0xB8, b"x25519", b"pk-8", 10, ctx);
+
+    let (envelope, _posted) = build_multi_envelope_v3(
+        &registry,
+        @0xA,
+        vector[@0xB0, @0xB1, @0xB2, @0xB3, @0xB4, @0xB5, @0xB6, @0xB7, @0xB8],
+        vector[
+            object::id(&r0), object::id(&r1), object::id(&r2),
+            object::id(&r3), object::id(&r4), object::id(&r5),
+            object::id(&r6), object::id(&r7), object::id(&r8),
+        ],
+        vector[1, 1, 1, 1, 1, 1, 1, 1, 1],
+        b"ctx",
+        b"schema",
+        b"x25519",
+        b"eph",
+        b"payload-nonce",
+        b"payload-ct",
+        vector[b"w0", b"w1", b"w2", b"w3", b"w4", b"w5", b"w6", b"w7", b"w8"],
+        vector[b"n0", b"n1", b"n2", b"n3", b"n4", b"n5", b"n6", b"n7", b"n8"],
+        55,
+        ctx,
+    );
+
+    transfer::public_transfer(r0, @0xB0);
+    transfer::public_transfer(r1, @0xB1);
+    transfer::public_transfer(r2, @0xB2);
+    transfer::public_transfer(r3, @0xB3);
+    transfer::public_transfer(r4, @0xB4);
+    transfer::public_transfer(r5, @0xB5);
+    transfer::public_transfer(r6, @0xB6);
+    transfer::public_transfer(r7, @0xB7);
+    transfer::public_transfer(r8, @0xB8);
+    transfer::freeze_object(envelope);
+    transfer::public_transfer(registry, @0xA);
+}
+
+#[test, expected_failure(abort_code = E_STALE_KEY_REFERENCE)]
+fun v3_stale_recipient_key_ref_is_rejected() {
+    let ctx = &mut tx_context::dummy();
+    let mut registry = new_registry(ctx);
+    let bob_v1 = register_encryption_key_for_test(&mut registry, @0xB, b"x25519", b"pk-bob-1", 10, ctx);
+    let bob_v2 = register_encryption_key_for_test(&mut registry, @0xB, b"x25519", b"pk-bob-2", 20, ctx);
+    let stale_id = object::id(&bob_v1);
+
+    let (envelope, _posted) = build_multi_envelope_v3(
+        &registry,
+        @0xA,
+        vector[@0xB],
+        vector[stale_id],
+        vector[2],
+        b"ctx",
+        b"schema",
+        b"x25519",
+        b"eph",
+        b"payload-nonce",
+        b"payload-ct",
+        vector[b"wrapped-bob"],
+        vector[b"wrap-nonce-bob"],
+        55,
+        ctx,
+    );
+
+    transfer::public_transfer(bob_v1, @0xB);
+    transfer::public_transfer(bob_v2, @0xB);
+    transfer::freeze_object(envelope);
+    transfer::public_transfer(registry, @0xA);
+}

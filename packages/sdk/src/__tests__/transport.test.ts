@@ -282,6 +282,12 @@ describe("feed compatibility decoding", () => {
         })
         .mockResolvedValueOnce({
           data: [],
+        })
+        .mockResolvedValueOnce({
+          data: [],
+        })
+        .mockResolvedValueOnce({
+          data: [],
         }),
       multiGetObjects: vi.fn(async () => [
         {

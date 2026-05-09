@@ -1,5 +1,12 @@
 import type { SuiClient } from "@mysten/sui/client";
-import { MODULE, ENCRYPTION_SCHEME, LEGACY_ENVELOPE_FORMAT_VERSION } from "./constants.js";
+import {
+  ENCRYPTION_SCHEME,
+  LEGACY_ENVELOPE_FORMAT_VERSION,
+  MODULE_COMMITMENTS,
+  MODULE_ENVELOPES,
+  MODULE_MULTI_ENVELOPES,
+  MODULE_REGISTRY,
+} from "./constants.js";
 import { normalizeAddress } from "./address.js";
 import {
   bytesArrayFromUnknown,
@@ -69,7 +76,39 @@ export interface FeedMultiEnvelopeEvent {
   gas: GasInfo | null;
 }
 
-export type FeedEvent = FeedKeyEvent | FeedEnvelopeEvent | FeedMultiEnvelopeEvent;
+export interface FeedCommittedEvent {
+  kind: "committed";
+  txDigest: string;
+  timestampMs: number;
+  commitmentId: string;
+  formatVersion: number;
+  author: string;
+  schema: string;
+  hashScheme: string;
+  commitment: Uint8Array;
+  gas: GasInfo | null;
+}
+
+export interface FeedOpenedEvent {
+  kind: "opened";
+  txDigest: string;
+  timestampMs: number;
+  commitmentId: string;
+  author: string;
+  schema: string;
+  hashScheme: string;
+  commitment: Uint8Array;
+  encodedSecret: Uint8Array;
+  salt: Uint8Array;
+  gas: GasInfo | null;
+}
+
+export type FeedEvent =
+  | FeedKeyEvent
+  | FeedEnvelopeEvent
+  | FeedMultiEnvelopeEvent
+  | FeedCommittedEvent
+  | FeedOpenedEvent;
 
 interface SuiEventEnvelope {
   id: { txDigest: string; eventSeq: string };
@@ -185,11 +224,13 @@ export async function fetchFeed(
   options: FetchFeedOptions,
 ): Promise<FeedEvent[]> {
   const limit = options.limit ?? 50;
-  const KEY_EVENT_TYPE = `${options.packageId}::${MODULE}::EncryptionKeyRegistered`;
-  const ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE}::EnvelopePosted`;
-  const MULTI_ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE}::MultiEnvelopePosted`;
+  const KEY_EVENT_TYPE = `${options.packageId}::${MODULE_REGISTRY}::EncryptionKeyRegistered`;
+  const ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE_ENVELOPES}::EnvelopePosted`;
+  const MULTI_ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE_MULTI_ENVELOPES}::MultiEnvelopePosted`;
+  const COMMITTED_EVENT_TYPE = `${options.packageId}::${MODULE_COMMITMENTS}::SecretCommitted`;
+  const OPENED_EVENT_TYPE = `${options.packageId}::${MODULE_COMMITMENTS}::SecretOpened`;
 
-  const [keyRes, envRes, multiRes] = await Promise.all([
+  const [keyRes, envRes, multiRes, committedRes, openedRes] = await Promise.all([
     suiClient.queryEvents({
       query: { MoveEventType: KEY_EVENT_TYPE },
       limit,
@@ -205,6 +246,16 @@ export async function fetchFeed(
       limit,
       order: "descending",
     }),
+    suiClient.queryEvents({
+      query: { MoveEventType: COMMITTED_EVENT_TYPE },
+      limit,
+      order: "descending",
+    }),
+    suiClient.queryEvents({
+      query: { MoveEventType: OPENED_EVENT_TYPE },
+      limit,
+      order: "descending",
+    }),
   ]);
 
   const envelopeIds = [
@@ -217,6 +268,8 @@ export async function fetchFeed(
     ...(keyRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
     ...(envRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
     ...(multiRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
+    ...(committedRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
+    ...(openedRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
   ];
   const gas = options.withGas !== false
     ? await fetchGasForTxs(suiClient, allDigests)
@@ -296,7 +349,46 @@ export async function fetchFeed(
     };
   });
 
-  const merged: FeedEvent[] = [...keyEvents, ...envelopeEvents, ...multiEvents];
+  const committedEvents: FeedCommittedEvent[] = (committedRes.data as SuiEventEnvelope[]).map((e) => {
+    const j = e.parsedJson;
+    return {
+      kind: "committed",
+      txDigest: e.id.txDigest,
+      timestampMs: Number(e.timestampMs ?? 0),
+      commitmentId: String(j.commitment_id ?? ""),
+      formatVersion: Number(j.format_version ?? 1),
+      author: normalizeAddress(String(j.author ?? "")),
+      schema: stringFromBytes(j.schema),
+      hashScheme: stringFromBytes(j.hash_scheme),
+      commitment: bytesFromArray(j.commitment),
+      gas: gas.get(e.id.txDigest) ?? null,
+    };
+  });
+
+  const openedEvents: FeedOpenedEvent[] = (openedRes.data as SuiEventEnvelope[]).map((e) => {
+    const j = e.parsedJson;
+    return {
+      kind: "opened",
+      txDigest: e.id.txDigest,
+      timestampMs: Number(e.timestampMs ?? 0),
+      commitmentId: String(j.commitment_id ?? ""),
+      author: normalizeAddress(String(j.author ?? "")),
+      schema: stringFromBytes(j.schema),
+      hashScheme: stringFromBytes(j.hash_scheme),
+      commitment: bytesFromArray(j.commitment),
+      encodedSecret: bytesFromArray(j.encoded_secret),
+      salt: bytesFromArray(j.salt),
+      gas: gas.get(e.id.txDigest) ?? null,
+    };
+  });
+
+  const merged: FeedEvent[] = [
+    ...keyEvents,
+    ...envelopeEvents,
+    ...multiEvents,
+    ...committedEvents,
+    ...openedEvents,
+  ];
   merged.sort((a, b) => b.timestampMs - a.timestampMs);
   return merged;
 }

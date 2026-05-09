@@ -1,6 +1,6 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { normalizeAddress } from "./address.js";
-import { MODULE } from "./constants.js";
+import { MODULE_MULTI_ENVELOPES } from "./constants.js";
 import {
   assertSupportedEnvelopeFormatVersion,
   bytesArrayFromUnknown,
@@ -126,7 +126,7 @@ export async function fetchMultiInbox(
 ): Promise<OnChainMultiEnvelope[]> {
   const target = normalizeAddress(ownerAddress);
   const limit = options.limit ?? 100;
-  const eventType = `${packageId}::${MODULE}::MultiEnvelopePosted`;
+  const eventType = `${packageId}::${MODULE_MULTI_ENVELOPES}::MultiEnvelopePosted`;
   const res = await suiClient.queryEvents({
     query: { MoveEventType: eventType },
     limit,

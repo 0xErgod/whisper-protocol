@@ -3,7 +3,9 @@ import {
   CLOCK_ID,
   CURRENT_ENVELOPE_FORMAT_VERSION,
   CURRENT_MULTI_ENVELOPE_FORMAT_VERSION,
-  MODULE,
+  MODULE_ENVELOPES,
+  MODULE_MULTI_ENVELOPES,
+  MODULE_REGISTRY,
   SCHEMA_TEXT_SECRET_V1,
   ENCRYPTION_SCHEME,
 } from "./constants.js";
@@ -47,7 +49,7 @@ export function buildPostEnvelopeTx(args: BuildPostEnvelopeArgs): Transaction {
   const tx = new Transaction();
   const schemaBytes = new TextEncoder().encode(args.schema ?? SCHEMA_TEXT_SECRET_V1);
   tx.moveCall({
-    target: `${args.packageId}::${MODULE}::post_envelope`,
+    target: `${args.packageId}::${MODULE_ENVELOPES}::post_envelope`,
     arguments: [
       tx.object(args.registryId),
       tx.pure.address(args.recipientAddress),
@@ -85,7 +87,7 @@ export function buildPostMultiEnvelopeTx(args: BuildPostMultiEnvelopeArgs): Tran
   const wrappedKeys = args.payload.wrappedKeys.map((w) => Array.from(w));
   const wrapNonces = args.payload.wrapNonces.map((n) => Array.from(n));
   tx.moveCall({
-    target: `${args.packageId}::${MODULE}::post_multi_envelope`,
+    target: `${args.packageId}::${MODULE_MULTI_ENVELOPES}::post_multi_envelope`,
     arguments: [
       tx.object(args.registryId),
       tx.pure.vector("address", recipientAddresses),
@@ -110,7 +112,7 @@ export function buildRegisterKeyTx(args: BuildRegisterKeyArgs): Transaction {
   const tx = new Transaction();
   const schemeBytes = new TextEncoder().encode(args.encryptionScheme ?? ENCRYPTION_SCHEME);
   tx.moveCall({
-    target: `${args.packageId}::${MODULE}::register_encryption_key`,
+    target: `${args.packageId}::${MODULE_REGISTRY}::register_encryption_key`,
     arguments: [
       tx.object(args.registryId),
       tx.pure.vector("u8", Array.from(schemeBytes)),

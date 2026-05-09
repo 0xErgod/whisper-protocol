@@ -3,7 +3,7 @@ import type { SuiClient } from "@mysten/sui/client";
 import {
   CURRENT_ENVELOPE_FORMAT_VERSION,
   ENCRYPTION_SCHEME,
-  MODULE,
+  MODULE_FACADE,
 } from "./constants.js";
 import { WriteCompatibilityError } from "./errors.js";
 import { assertSupportedEnvelopeFormatVersion } from "./envelope-codec.js";
@@ -22,7 +22,7 @@ export async function readOnChainProtocolVersion(
   packageId: string,
 ): Promise<number> {
   const tx = new Transaction();
-  tx.moveCall({ target: `${packageId}::${MODULE}::protocol_version` });
+  tx.moveCall({ target: `${packageId}::${MODULE_FACADE}::protocol_version` });
 
   const result = await suiClient.devInspectTransactionBlock({
     sender: ZERO_ADDRESS,
@@ -31,26 +31,26 @@ export async function readOnChainProtocolVersion(
 
   if (result.error) {
     throw new Error(
-      `dev-inspect of ${packageId}::${MODULE}::protocol_version failed: ${result.error}`,
+      `dev-inspect of ${packageId}::${MODULE_FACADE}::protocol_version failed: ${result.error}`,
     );
   }
 
   const returns = result.results?.[0]?.returnValues;
   if (!returns || returns.length === 0) {
     throw new Error(
-      `${packageId}::${MODULE}::protocol_version returned no value — is this a pre-protocol_version deployment?`,
+      `${packageId}::${MODULE_FACADE}::protocol_version returned no value — is this a pre-protocol_version deployment?`,
     );
   }
 
   const [bytes, type] = returns[0]!;
   if (type !== "u32") {
     throw new Error(
-      `${packageId}::${MODULE}::protocol_version returned ${type}, expected u32`,
+      `${packageId}::${MODULE_FACADE}::protocol_version returned ${type}, expected u32`,
     );
   }
   if (bytes.length < 4) {
     throw new Error(
-      `${packageId}::${MODULE}::protocol_version returned only ${bytes.length} bytes`,
+      `${packageId}::${MODULE_FACADE}::protocol_version returned only ${bytes.length} bytes`,
     );
   }
   return (
