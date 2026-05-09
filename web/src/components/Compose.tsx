@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
+  MAX_RECIPIENTS,
   MODULE,
   SCHEMA_TEXT_SECRET_V1,
   normalizeAddress,
@@ -29,7 +30,8 @@ interface GasInfo {
   netMist: bigint;
 }
 
-interface Receipt {
+interface SingleReceipt {
+  kind: "single";
   txDigest: string;
   envelopeId: string | null;
   formatVersion: number;
@@ -51,6 +53,29 @@ interface Receipt {
   gas: GasInfo | null;
 }
 
+interface MultiReceipt {
+  kind: "multi";
+  txDigest: string;
+  envelopeId: string | null;
+  formatVersion: number;
+  recipients: Array<{ address: string; keyId: string; keyVersion: number }>;
+  ephPubkeyHex: string;
+  payloadNonceHex: string;
+  ciphertextHex: string;
+  ciphertextBytes: number;
+  plaintextBytes: number;
+  schema: string;
+  scheme: string;
+  senderAddress: string;
+  package: string;
+  registry: string;
+  module: string;
+  function: string;
+  gas: GasInfo | null;
+}
+
+type Receipt = SingleReceipt | MultiReceipt;
+
 function gasFromEffects(summary: {
   computationCost?: string;
   storageCost?: string;
@@ -69,22 +94,56 @@ function gasFromEffects(summary: {
 }
 
 export function Compose({ registry, keys, account, mode, txExecutor }: Props) {
-  const [recipient, setRecipient] = useState("");
+  const [recipientDraft, setRecipientDraft] = useState("");
+  const [recipients, setRecipients] = useState<string[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
 
-  const validRecipientEntry = useMemo<RegistryEntry | null>(() => {
-    if (!recipient || !recipient.startsWith("0x")) return null;
-    const norm = normalizeAddress(recipient);
+  const draftLooksLikeAddress = recipientDraft.startsWith("0x") && recipientDraft.length >= 4;
+  const draftEntry = useMemo<RegistryEntry | null>(() => {
+    if (!draftLooksLikeAddress) return null;
+    const norm = normalizeAddress(recipientDraft);
     return registry.find((e) => e.account === norm) ?? null;
-  }, [recipient, registry]);
+  }, [recipientDraft, draftLooksLikeAddress, registry]);
 
-  const isOwnAddress = useMemo(() => {
-    if (!account || !recipient) return false;
-    return normalizeAddress(account.address) === normalizeAddress(recipient);
-  }, [account, recipient]);
+  const draftIsOwn = useMemo(() => {
+    if (!account || !recipientDraft) return false;
+    return normalizeAddress(account.address) === normalizeAddress(recipientDraft);
+  }, [account, recipientDraft]);
+
+  const draftIsDuplicate = useMemo(() => {
+    if (!draftLooksLikeAddress) return false;
+    const norm = normalizeAddress(recipientDraft);
+    return recipients.some((r) => normalizeAddress(r) === norm);
+  }, [recipientDraft, draftLooksLikeAddress, recipients]);
+
+  const recipientEntries = useMemo<Array<{ address: string; entry: RegistryEntry | null }>>(
+    () =>
+      recipients.map((r) => {
+        const norm = normalizeAddress(r);
+        return {
+          address: r,
+          entry: registry.find((e) => e.account === norm) ?? null,
+        };
+      }),
+    [recipients, registry],
+  );
+  const allRecipientsRegistered = recipientEntries.every((r) => r.entry !== null);
+  const isMulti = recipients.length > 1;
+  const canAddRecipient =
+    draftLooksLikeAddress && !!draftEntry && !draftIsOwn && !draftIsDuplicate && recipients.length < MAX_RECIPIENTS;
+
+  function commitRecipient() {
+    if (!canAddRecipient) return;
+    setRecipients((prev) => [...prev, recipientDraft]);
+    setRecipientDraft("");
+  }
+
+  function removeRecipient(addr: string) {
+    setRecipients((prev) => prev.filter((r) => r !== addr));
+  }
 
   if (!account) {
     return (
@@ -124,14 +183,12 @@ export function Compose({ registry, keys, account, mode, txExecutor }: Props) {
   async function send(e: React.FormEvent) {
     e.preventDefault();
     if (!account || !keys) return;
-    if (isOwnAddress) {
-      setErr("cannot send to your own address.");
+    if (recipients.length === 0) {
+      setErr("add at least one recipient.");
       return;
     }
-    if (!validRecipientEntry) {
-      setErr(
-        `recipient ${normalizeAddress(recipient)} has no registry entry. they must call register_encryption_key first.`,
-      );
+    if (!allRecipientsRegistered) {
+      setErr("at least one recipient has no registry entry. ask them to register first.");
       return;
     }
     if (!text.trim()) {
@@ -143,63 +200,111 @@ export function Compose({ registry, keys, account, mode, txExecutor }: Props) {
     setReceipt(null);
 
     try {
-      const prepared = await whisper.prepareSend({
-        senderAddress: account.address,
-        recipientAddress: recipient,
-        plaintext: text,
-      });
-
       if (!txExecutor) throw new Error("no transaction signer available");
-      const result = await txExecutor(prepared.tx);
 
-      // dapp-kit's default execute path returns digest + raw effects only;
-      // pull full effects via the SuiClient for receipt details.
-      const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
-        digest: result.digest,
-        options: { showObjectChanges: true, showEffects: true },
-      });
-
-      const execStatus = full.effects?.status;
-      if (!execStatus || execStatus.status !== "success") {
-        const code = execStatus?.status ?? "unknown";
-        const errText = execStatus?.error;
-        throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
-      }
-
-      // SuiObjectChange is a discriminated union; the `created` variant
-      // is the only one carrying both `objectType` and `objectId`,
-      // which TS narrows automatically once we test `change.type`.
-      let envelopeId: string | null = null;
-      const target = `${PACKAGE_ID}::${MODULE}::EncryptedEnvelope`;
-      for (const change of full.objectChanges ?? []) {
-        if (change.type === "created" && change.objectType === target) {
-          envelopeId = change.objectId;
-          break;
+      if (isMulti) {
+        const prepared = await whisper.prepareSendMulti({
+          senderAddress: account.address,
+          recipientAddresses: recipients,
+          plaintext: text,
+        });
+        const result = await txExecutor(prepared.tx);
+        const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
+          digest: result.digest,
+          options: { showObjectChanges: true, showEffects: true },
+        });
+        const execStatus = full.effects?.status;
+        if (!execStatus || execStatus.status !== "success") {
+          const code = execStatus?.status ?? "unknown";
+          const errText = execStatus?.error;
+          throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
         }
-      }
 
-      setReceipt({
-        txDigest: full.digest,
-        envelopeId,
-        formatVersion: prepared.formatVersion,
-        recipient: prepared.recipient.account,
-        recipientKeyId: prepared.recipientKeyId,
-        keyVersion: prepared.keyVersion,
-        ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
-        nonceHex: bytesToHex(prepared.payload.nonce),
-        ciphertextHex: bytesToHex(prepared.payload.ciphertext),
-        ciphertextBytes: prepared.payload.ciphertext.length,
-        plaintextBytes: new TextEncoder().encode(text).length,
-        schema: SCHEMA_TEXT_SECRET_V1,
-        scheme: prepared.payload.encryptionScheme,
-        senderAddress: account.address,
-        package: PACKAGE_ID,
-        registry: REGISTRY_ID,
-        module: MODULE,
-        function: "post_envelope",
-        gas: gasFromEffects(full.effects?.gasUsed),
-      });
+        let envelopeId: string | null = null;
+        const target = `${PACKAGE_ID}::${MODULE}::MultiRecipientEnvelope`;
+        for (const change of full.objectChanges ?? []) {
+          if (change.type === "created" && change.objectType === target) {
+            envelopeId = change.objectId;
+            break;
+          }
+        }
+
+        setReceipt({
+          kind: "multi",
+          txDigest: full.digest,
+          envelopeId,
+          formatVersion: prepared.formatVersion,
+          recipients: prepared.recipients.map((r) => ({
+            address: r.account,
+            keyId: r.currentKeyId,
+            keyVersion: r.keyVersion,
+          })),
+          ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
+          payloadNonceHex: bytesToHex(prepared.payload.payloadNonce),
+          ciphertextHex: bytesToHex(prepared.payload.ciphertext),
+          ciphertextBytes: prepared.payload.ciphertext.length,
+          plaintextBytes: new TextEncoder().encode(text).length,
+          schema: SCHEMA_TEXT_SECRET_V1,
+          scheme: prepared.payload.encryptionScheme,
+          senderAddress: account.address,
+          package: PACKAGE_ID,
+          registry: REGISTRY_ID,
+          module: MODULE,
+          function: "post_multi_envelope",
+          gas: gasFromEffects(full.effects?.gasUsed),
+        });
+      } else {
+        const prepared = await whisper.prepareSend({
+          senderAddress: account.address,
+          recipientAddress: recipients[0]!,
+          plaintext: text,
+        });
+        const result = await txExecutor(prepared.tx);
+        const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
+          digest: result.digest,
+          options: { showObjectChanges: true, showEffects: true },
+        });
+        const execStatus = full.effects?.status;
+        if (!execStatus || execStatus.status !== "success") {
+          const code = execStatus?.status ?? "unknown";
+          const errText = execStatus?.error;
+          throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
+        }
+
+        let envelopeId: string | null = null;
+        const target = `${PACKAGE_ID}::${MODULE}::EncryptedEnvelope`;
+        for (const change of full.objectChanges ?? []) {
+          if (change.type === "created" && change.objectType === target) {
+            envelopeId = change.objectId;
+            break;
+          }
+        }
+
+        setReceipt({
+          kind: "single",
+          txDigest: full.digest,
+          envelopeId,
+          formatVersion: prepared.formatVersion,
+          recipient: prepared.recipient.account,
+          recipientKeyId: prepared.recipientKeyId,
+          keyVersion: prepared.keyVersion,
+          ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
+          nonceHex: bytesToHex(prepared.payload.nonce),
+          ciphertextHex: bytesToHex(prepared.payload.ciphertext),
+          ciphertextBytes: prepared.payload.ciphertext.length,
+          plaintextBytes: new TextEncoder().encode(text).length,
+          schema: SCHEMA_TEXT_SECRET_V1,
+          scheme: prepared.payload.encryptionScheme,
+          senderAddress: account.address,
+          package: PACKAGE_ID,
+          registry: REGISTRY_ID,
+          module: MODULE,
+          function: "post_envelope",
+          gas: gasFromEffects(full.effects?.gasUsed),
+        });
+      }
       setText("");
+      setRecipients([]);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally {
@@ -218,16 +323,56 @@ export function Compose({ registry, keys, account, mode, txExecutor }: Props) {
       <div className="window-body">
         <form className="compose" onSubmit={send}>
           <label htmlFor="compose-recipient">to</label>
-          <input
-            id="compose-recipient"
-            type="text"
-            placeholder="0x… recipient sui address"
-            value={recipient}
-            onChange={(e) => setRecipient(e.target.value.trim())}
-            disabled={busy}
-            spellCheck={false}
-            style={{ minWidth: "44ch" }}
-          />
+          <div className="recipient-input-row">
+            {recipientEntries.map((r) => (
+              <span
+                key={r.address}
+                className={`recipient-chip${r.entry === null ? " recipient-chip-error" : ""}`}
+              >
+                <RawId value={r.address} kind="address" />
+                {r.entry !== null && (
+                  <span className="recipient-chip-meta">v{r.entry.keyVersion}</span>
+                )}
+                <button
+                  type="button"
+                  className="recipient-chip-remove"
+                  aria-label={`remove recipient ${r.address}`}
+                  onClick={() => removeRecipient(r.address)}
+                  disabled={busy}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <input
+              id="compose-recipient"
+              type="text"
+              placeholder={
+                recipients.length === 0
+                  ? "0x… recipient sui address"
+                  : recipients.length < MAX_RECIPIENTS
+                    ? "+ add another recipient"
+                    : `max ${MAX_RECIPIENTS} recipients`
+              }
+              value={recipientDraft}
+              onChange={(e) => setRecipientDraft(e.target.value.trim())}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") {
+                  e.preventDefault();
+                  commitRecipient();
+                }
+                if (e.key === "Backspace" && recipientDraft === "" && recipients.length > 0) {
+                  removeRecipient(recipients[recipients.length - 1]!);
+                }
+              }}
+              onBlur={() => {
+                if (canAddRecipient) commitRecipient();
+              }}
+              disabled={busy || recipients.length >= MAX_RECIPIENTS}
+              spellCheck={false}
+              style={{ minWidth: "30ch", flex: 1 }}
+            />
+          </div>
           <label htmlFor="compose-text" className="sr-only">
             secret
           </label>
@@ -242,27 +387,53 @@ export function Compose({ registry, keys, account, mode, txExecutor }: Props) {
           />
           <button
             type="submit"
-            disabled={busy || !text.trim() || !validRecipientEntry || isOwnAddress}
+            disabled={busy || !text.trim() || recipients.length === 0 || !allRecipientsRegistered}
           >
-            {busy ? "sending…" : "send"}
+            {busy
+              ? "sending…"
+              : isMulti
+                ? `send to ${recipients.length}`
+                : "send"}
           </button>
 
           <div className="compose-status">
-            {!recipient ? (
-              <>enter a recipient sui address.</>
-            ) : isOwnAddress ? (
-              <span className="compose-status error">
-                cannot send to your own address.
-              </span>
-            ) : validRecipientEntry ? (
-              <>
-                will encrypt to <RawId value={validRecipientEntry.account} kind="address" /> ·{" "}
-                key v{validRecipientEntry.keyVersion} · suite {validRecipientEntry.encryptionScheme}
-              </>
-            ) : (
+            {recipients.length === 0 && !recipientDraft ? (
+              <>enter recipient addresses; press enter or comma to add each one.</>
+            ) : recipients.length === 0 && recipientDraft && !draftEntry && draftLooksLikeAddress ? (
               <span className="compose-status error">
                 no registry entry for this address. ask them to register first.
               </span>
+            ) : recipients.length === 0 && draftIsOwn ? (
+              <span className="compose-status error">
+                cannot send to your own address.
+              </span>
+            ) : recipients.length === 0 && draftEntry ? (
+              <>
+                press enter to add <RawId value={draftEntry.account} kind="address" />.
+              </>
+            ) : recipientDraft && draftIsOwn ? (
+              <span className="compose-status error">cannot add your own address.</span>
+            ) : recipientDraft && draftIsDuplicate ? (
+              <span className="compose-status error">recipient already in the list.</span>
+            ) : recipientDraft && draftLooksLikeAddress && !draftEntry ? (
+              <span className="compose-status error">
+                no registry entry for this address. ask them to register first.
+              </span>
+            ) : recipientDraft && draftEntry ? (
+              <>
+                press enter to add <RawId value={draftEntry.account} kind="address" />.
+              </>
+            ) : isMulti ? (
+              <>
+                will hybrid-encrypt for {recipients.length} recipients (one ciphertext, {recipients.length}{" "}
+                wrapped keys) — fmt v3, suite multi-wrap-v1.
+              </>
+            ) : (
+              <>
+                will encrypt to <RawId value={recipientEntries[0]!.address} kind="address" /> ·{" "}
+                fmt v2, suite{" "}
+                {recipientEntries[0]!.entry?.encryptionScheme}
+              </>
             )}
           </div>
 
@@ -299,10 +470,27 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         <dd>
           <RawId value={receipt.senderAddress} kind="address" forceRaw />
         </dd>
-        <dt>recipient</dt>
-        <dd>
-          <RawId value={receipt.recipient} kind="address" forceRaw />
-        </dd>
+        {receipt.kind === "single" ? (
+          <>
+            <dt>recipient</dt>
+            <dd>
+              <RawId value={receipt.recipient} kind="address" forceRaw />
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>recipients ({receipt.recipients.length})</dt>
+            <dd>
+              <ul style={{ margin: 0, paddingLeft: "1.5ch" }}>
+                {receipt.recipients.map((r) => (
+                  <li key={r.address}>
+                    <RawId value={r.address} kind="address" forceRaw /> · key v{r.keyVersion}
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </>
+        )}
         <dt>move call</dt>
         <dd>
           <RawId value={receipt.package} kind="package" forceRaw />
@@ -312,14 +500,18 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         <dd>
           <RawId value={receipt.registry} kind="registry" forceRaw />
         </dd>
-        <dt>declared key_version</dt>
-        <dd>v{receipt.keyVersion} (asserted on-chain against current registry)</dd>
+        {receipt.kind === "single" && (
+          <>
+            <dt>declared key_version</dt>
+            <dd>v{receipt.keyVersion} (asserted on-chain against current registry)</dd>
+            <dt>recipient key ref</dt>
+            <dd>
+              <RawId value={receipt.recipientKeyId} kind="bytes" forceRaw />
+            </dd>
+          </>
+        )}
         <dt>format_version</dt>
         <dd>v{receipt.formatVersion}</dd>
-        <dt>recipient key ref</dt>
-        <dd>
-          <RawId value={receipt.recipientKeyId} kind="bytes" forceRaw />
-        </dd>
         <dt>schema</dt>
         <dd>{receipt.schema}</dd>
         <dt>suite</dt>
@@ -349,9 +541,11 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         <dd>
           <code className="receipt-bytes">{receipt.ephPubkeyHex}</code>
         </dd>
-        <dt>nonce</dt>
+        <dt>{receipt.kind === "single" ? "nonce" : "payload nonce"}</dt>
         <dd>
-          <code className="receipt-bytes">{receipt.nonceHex}</code>
+          <code className="receipt-bytes">
+            {receipt.kind === "single" ? receipt.nonceHex : receipt.payloadNonceHex}
+          </code>
         </dd>
         <dt>ciphertext</dt>
         <dd>
