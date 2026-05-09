@@ -9,6 +9,7 @@ import {
   CURRENT_COMMITMENT_FORMAT_VERSION,
   CURRENT_ENVELOPE_FORMAT_VERSION,
   HASH_SCHEME_BLAKE2B_256,
+  HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1,
   MODULE_COMMITMENTS,
   MODULE_ENVELOPES,
   SCHEMA_COMMITMENT_OPENING_V1,
@@ -20,6 +21,8 @@ import {
   recipientIndexInV5Envelope,
   type OnChainV5Envelope,
 } from "./envelope-unified.js";
+import { UnsupportedHashSchemeError } from "./errors.js";
+import { poseidonCommitmentHash } from "./hash-poseidon.js";
 import { requireUnifiedEncryptionSuite } from "./suites-unified.js";
 import type { RegistryEntry } from "./registry.js";
 
@@ -70,16 +73,7 @@ export function encodeTextSecret(text: string): Uint8Array {
   return new TextEncoder().encode(normalized);
 }
 
-/**
- * Compute commitment bytes for an already-encoded secret.
- *
- * `commitment = Blake2b-256(domain || encoded_secret || salt)`
- *
- * The domain prefix prevents cross-protocol collisions; the salt
- * prevents brute-force opening of low-entropy secrets like
- * `attack=north`.
- */
-export function commitmentHash(
+function commitmentHashBlake2b(
   encodedSecret: Uint8Array,
   salt: Uint8Array,
 ): Uint8Array {
@@ -91,34 +85,80 @@ export function commitmentHash(
 }
 
 /**
- * Generate a fresh salt and produce the commitment bytes for it.
+ * Compute commitment bytes for an already-encoded secret under the
+ * named hash scheme. Defaults to Blake2b-256 (the throughput-friendly
+ * native primitive). Pass `HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1`
+ * for ZK-friendly commitments that future Groth16 proofs can reason
+ * about cheaply.
+ *
+ * The domain prefix prevents cross-protocol collisions; the salt
+ * prevents brute-force opening of low-entropy secrets like
+ * `attack=north`.
+ *
+ * Throws `UnsupportedHashSchemeError` for unknown scheme strings —
+ * fail-closed per invariant #15.
+ */
+export function commitmentHash(
+  encodedSecret: Uint8Array,
+  salt: Uint8Array,
+  hashScheme: string = HASH_SCHEME_BLAKE2B_256,
+): Uint8Array {
+  switch (hashScheme) {
+    case HASH_SCHEME_BLAKE2B_256:
+      return commitmentHashBlake2b(encodedSecret, salt);
+    case HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1:
+      return poseidonCommitmentHash(encodedSecret, salt);
+    default:
+      throw new UnsupportedHashSchemeError(hashScheme);
+  }
+}
+
+/**
+ * Generate a fresh salt and produce the commitment bytes under the
+ * given hash scheme. Defaults to Blake2b-256 to preserve existing
+ * call sites' behavior.
  *
  * The returned `salt` MUST be stored alongside `encodedSecret` to
  * later open the commitment. Losing it means the commitment can
  * never be re-opened by anyone.
  */
-export function createCommitment(encodedSecret: Uint8Array): {
+export function createCommitment(
+  encodedSecret: Uint8Array,
+  hashScheme: string = HASH_SCHEME_BLAKE2B_256,
+): {
   commitment: Uint8Array;
   salt: Uint8Array;
+  hashScheme: string;
 } {
   const salt = randomBytes(32);
-  const commitment = commitmentHash(encodedSecret, salt);
-  return { commitment, salt };
+  const commitment = commitmentHash(encodedSecret, salt, hashScheme);
+  return { commitment, salt, hashScheme };
 }
 
 /**
  * Verify that an opening matches a previously-posted commitment.
  *
- * Re-hashes `(domain || encoded_secret || salt)` and compares to the
- * commitment bytes byte-by-byte. Returns false on any mismatch
- * including length mismatches; never throws.
+ * Re-hashes `(domain, encoded_secret, salt)` under the same scheme
+ * the commitment used and compares byte-by-byte. Returns false on
+ * any mismatch including length mismatches and unknown schemes;
+ * never throws.
+ *
+ * The `hashScheme` must come from the commitment object's on-chain
+ * `hash_scheme` field — verifying a Poseidon commitment under
+ * Blake2b (or vice versa) returns false, as it should.
  */
 export function verifyOpening(
   encodedSecret: Uint8Array,
   salt: Uint8Array,
   expectedCommitment: Uint8Array,
+  hashScheme: string = HASH_SCHEME_BLAKE2B_256,
 ): boolean {
-  const computed = commitmentHash(encodedSecret, salt);
+  let computed: Uint8Array;
+  try {
+    computed = commitmentHash(encodedSecret, salt, hashScheme);
+  } catch {
+    return false;
+  }
   if (computed.length !== expectedCommitment.length) return false;
   let acc = 0;
   for (let i = 0; i < computed.length; i++) {
@@ -291,7 +331,8 @@ export function prepareCommitWithSelfOpening(
   }
 
   const encodedSecret = encodeTextSecret(args.plaintextSecret);
-  const { commitment, salt } = createCommitment(encodedSecret);
+  const hashScheme = args.hashScheme ?? HASH_SCHEME_BLAKE2B_256;
+  const { commitment, salt } = createCommitment(encodedSecret, hashScheme);
 
   const openingPlaintext = encodeOpeningPlaintext({ encodedSecret, salt });
   const payload = encryptForRecipientsV5({
@@ -309,9 +350,7 @@ export function prepareCommitWithSelfOpening(
 
   // Move call 1: commit_secret
   const schemaBytes = new TextEncoder().encode(args.schema);
-  const hashSchemeBytes = new TextEncoder().encode(
-    args.hashScheme ?? HASH_SCHEME_BLAKE2B_256,
-  );
+  const hashSchemeBytes = new TextEncoder().encode(hashScheme);
   tx.moveCall({
     target: `${args.packageId}::${MODULE_COMMITMENTS}::commit_secret`,
     arguments: [
@@ -382,6 +421,7 @@ export async function loadOpeningForCommitment(
   ownerAddress: string,
   recipientPrivateKey: Uint8Array,
   targetCommitment: Uint8Array,
+  hashScheme: string = HASH_SCHEME_BLAKE2B_256,
 ): Promise<{ encodedSecret: Uint8Array; salt: Uint8Array; envelope: OnChainV5Envelope } | null> {
   const owner = normalizeAddress(ownerAddress);
   const inbox = await fetchV5Inbox(suiClient, packageId, owner);
@@ -421,7 +461,10 @@ export async function loadOpeningForCommitment(
     } catch {
       continue;
     }
-    if (!verifyOpening(encodedSecret, salt, targetCommitment)) continue;
+    // Hash scheme is the recipient's responsibility to know — the
+    // commitment's on-chain `hash_scheme` field tells callers which
+    // primitive to use here. Mismatched schemes fail closed.
+    if (!verifyOpening(encodedSecret, salt, targetCommitment, hashScheme)) continue;
     return { encodedSecret, salt, envelope };
   }
   return null;

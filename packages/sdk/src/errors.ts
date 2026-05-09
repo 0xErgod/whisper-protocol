@@ -24,3 +24,13 @@ export class WriteCompatibilityError extends Error {
     this.name = "WriteCompatibilityError";
   }
 }
+
+export class UnsupportedHashSchemeError extends Error {
+  readonly hashScheme: string;
+
+  constructor(hashScheme: string) {
+    super(`Unsupported Whisper commitment hash scheme "${hashScheme}".`);
+    this.name = "UnsupportedHashSchemeError";
+    this.hashScheme = hashScheme;
+  }
+}

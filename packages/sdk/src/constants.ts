@@ -54,6 +54,18 @@ export const ENCRYPTION_SCHEME_UNIFIED =
 // commitment bytes.
 export const HASH_SCHEME_BLAKE2B_256 = "blake2b-256";
 
+// ZK-friendly commitment hash. Poseidon over BN254 with circomlib
+// parameters; the parameter set is part of the suite identifier
+// because two libraries that both call themselves "Poseidon BN254"
+// can produce different hashes. circomlib parameters match Sui's
+// future on-chain Groth16 verifier path and the broader JS/EVM ZK
+// ecosystem (Semaphore, RLN, Tornado Cash, etc.).
+//
+// Future Rust prover (arkworks-rs) MUST instantiate Poseidon with
+// circomlib's round constants and MDS matrix — see
+// specs/poseidon-commitment-format.md.
+export const HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1 = "poseidon-bn254-circomlib-v1";
+
 // Domain-separation tag for commitment hashing. Per the spec:
 //   commitment = H(domain || encoded_secret || salt)
 // The domain prevents the same secret/salt from hashing to the same

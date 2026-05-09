@@ -83,8 +83,11 @@ export { readOnChainProtocolVersion, assertWriteCompatible } from "./protocol.js
 export {
   UnsupportedEnvelopeFormatVersionError,
   UnsupportedEncryptionSchemeError,
+  UnsupportedHashSchemeError,
   WriteCompatibilityError,
 } from "./errors.js";
+
+export { poseidonCommitmentHash, MAX_POSEIDON_SECRET_BYTES } from "./hash-poseidon.js";
 
 export { normalizeAddress, shortAddress } from "./address.js";
 
@@ -109,6 +112,7 @@ export {
   HKDF_INFO,
   HKDF_INFO_WRAP,
   HASH_SCHEME_BLAKE2B_256,
+  HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1,
   COMMITMENT_DOMAIN_V1,
   SDK_PROTOCOL_VERSION,
 } from "./constants.js";
