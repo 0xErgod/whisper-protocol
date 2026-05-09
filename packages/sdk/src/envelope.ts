@@ -1,6 +1,6 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { normalizeAddress } from "./address.js";
-import { LEGACY_ENVELOPE_FORMAT_VERSION, MODULE } from "./constants.js";
+import { LEGACY_ENVELOPE_FORMAT_VERSION, MODULE_ENVELOPES } from "./constants.js";
 import {
   assertSupportedEnvelopeFormatVersion,
   bytesFromArray,
@@ -126,7 +126,7 @@ export async function fetchInbox(
   packageId: string,
   ownerAddress: string,
 ): Promise<OnChainEnvelope[]> {
-  const envelopeType = `${packageId}::${MODULE}::EncryptedEnvelope`;
+  const envelopeType = `${packageId}::${MODULE_ENVELOPES}::EncryptedEnvelope`;
   const owned = await suiClient.getOwnedObjects({
     owner: ownerAddress,
     filter: { StructType: envelopeType },

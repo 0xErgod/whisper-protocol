@@ -668,6 +668,34 @@
   color: var(--ok);
 }
 
+.compose-tabs {
+  display: flex;
+  gap: 1ch;
+  margin-bottom: 0.5rem;
+}
+
+.compose-tabs button {
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.18ch;
+  text-transform: uppercase;
+  padding: 0.35rem 1.4ch;
+  border: 1px solid var(--brand-dim);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.compose-tabs button[aria-selected="true"] {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: rgba(255, 165, 0, 0.06);
+}
+
+.row-event.kind-commit .bubble-header .tag {
+  letter-spacing: 0.15ch;
+}
+
 .spinner {
   display: inline-block;
   width: 1ch;
