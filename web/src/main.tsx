@@ -7,7 +7,7 @@ import {
 } from "@mysten/dapp-kit";
 import { App } from "./App";
 import { AuditProvider } from "./perspective/audit";
-import { RPC_URL } from "./whisper/client";
+import { ACTIVE_NETWORK, RPC_URL } from "./whisper/client";
 import { whisperTheme } from "./whisper/theme";
 import "@mysten/dapp-kit/dist/index.css";
 import "./styles/tokens.css";
@@ -15,13 +15,8 @@ import "./styles/app.css";
 
 const queryClient = new QueryClient();
 
-// Network alias must be one of localnet/devnet/testnet/mainnet so that
-// dApp Kit can pass `sui:<network>` as the chain identifier to wallets.
-// Switch this when pointing the dApp at a different Sui environment.
-const ACTIVE_NETWORK = "testnet" as const;
-
 const networks = {
-  testnet: { url: RPC_URL },
+  [ACTIVE_NETWORK]: { url: RPC_URL },
 } as const;
 
 const root = document.getElementById("root");

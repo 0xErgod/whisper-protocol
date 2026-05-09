@@ -1,8 +1,14 @@
 import { bytesToHex } from "@noble/hashes/utils";
-import { useCurrentAccount } from "@mysten/dapp-kit";
-import { normalizeAddress, tryDecryptUtf8 } from "@whisper-protocol/sdk";
+import {
+  assertCanReadEnvelope,
+  normalizeAddress,
+  UnsupportedEncryptionSchemeError,
+  UnsupportedEnvelopeFormatVersionError,
+  tryDecryptUtf8,
+} from "@whisper-protocol/sdk";
 import type { FeedEvent, FeedEnvelopeEvent, FeedKeyEvent } from "@whisper-protocol/sdk/feed";
 import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
+import type { ActiveAccount } from "../whisper/session";
 import { RawId } from "./RawId";
 import { gasBreakdownTooltip, shortGas } from "../whisper/gas";
 
@@ -10,6 +16,7 @@ interface Props {
   events: FeedEvent[];
   loading: boolean;
   keys: DerivedEncryptionKeypair | null;
+  account: ActiveAccount | null;
 }
 
 function formatRelative(ms: number, now: number): string {
@@ -70,17 +77,30 @@ function EnvelopeRow({
 }) {
   const isOutgoing = !!myAddress && myAddress === ev.sender;
   const isIncoming = !!myAddress && myAddress === ev.recipient;
+  let unsupportedReason: string | null = null;
 
   let plaintext: string | null = null;
   if (isIncoming && keys) {
-    plaintext = tryDecryptUtf8({
-      recipientPrivateKey: keys.encryptionPrivateKey,
-      senderAddress: ev.sender,
-      recipientAddress: ev.recipient,
-      ephPubkey: ev.ephPubkey,
-      nonce: ev.nonce,
-      ciphertext: ev.ciphertext,
-    });
+    try {
+      assertCanReadEnvelope(ev);
+      plaintext = tryDecryptUtf8({
+        recipientPrivateKey: keys.encryptionPrivateKey,
+        encryptionScheme: ev.encryptionScheme,
+        senderAddress: ev.sender,
+        recipientAddress: ev.recipient,
+        ephPubkey: ev.ephPubkey,
+        nonce: ev.nonce,
+        ciphertext: ev.ciphertext,
+      });
+    } catch (error: unknown) {
+      if (error instanceof UnsupportedEnvelopeFormatVersionError) {
+        unsupportedReason = `unsupported format_version v${error.formatVersion}`;
+      } else if (error instanceof UnsupportedEncryptionSchemeError) {
+        unsupportedReason = `unsupported suite ${error.encryptionScheme}`;
+      } else {
+        unsupportedReason = "unsupported envelope";
+      }
+    }
   }
 
   let stateClass = "locked";
@@ -102,7 +122,7 @@ function EnvelopeRow({
   return (
     <div className={`row-event kind-envelope ${stateClass}`}>
       <div className="row-event-side">
-        <span className="row-event-kind">ENV · v{ev.keyVersion}</span>
+        <span className="row-event-kind">ENV · fmt v{ev.formatVersion} · key v{ev.keyVersion}</span>
         <span>{formatRelative(ev.timestampMs, now)}</span>
         <span className="row-event-gas" title={gasBreakdownTooltip(ev.gas)}>
           gas {shortGas(ev.gas)}
@@ -115,7 +135,9 @@ function EnvelopeRow({
             <RawId value={ev.sender} kind="address" />
             <span className="arrow">→</span>
             <RawId value={ev.recipient} kind="address" />
-            <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>{ev.schema}</span>
+            <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>
+              {ev.schema} · {ev.encryptionScheme}
+            </span>
           </div>
           <div className="bubble-meta">
             <span>
@@ -133,6 +155,13 @@ function EnvelopeRow({
             </div>
           ) : plaintext !== null ? (
             <div className="bubble-body plaintext">{plaintext}</div>
+          ) : unsupportedReason ? (
+            <div className="bubble-body cipher">
+              <strong style={{ fontWeight: "normal" }}>cannot decrypt</strong>
+              <div style={{ marginTop: "0.4rem", color: "var(--text-faint)" }}>
+                · {unsupportedReason}
+              </div>
+            </div>
           ) : (
             <div className="bubble-body cipher" title="raw ciphertext (AEAD-protected)">
               {ciphertextPreview(ev.ciphertext)}
@@ -149,8 +178,7 @@ function EnvelopeRow({
   );
 }
 
-export function Feed({ events, loading, keys }: Props) {
-  const account = useCurrentAccount();
+export function Feed({ events, loading, keys, account }: Props) {
   const myAddress = account ? normalizeAddress(account.address) : null;
   const now = Date.now();
   return (

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { useCurrentAccount } from "@mysten/dapp-kit";
+import { useCurrentAccount, useSignAndExecuteTransaction } from "@mysten/dapp-kit";
 import type { FeedEvent } from "@whisper-protocol/sdk/feed";
 import { fetchFeed } from "@whisper-protocol/sdk/feed";
 import type { RegistryEntry } from "@whisper-protocol/sdk";
-import { suiClient, whisper, PACKAGE_ID, REGISTRY_ID } from "./whisper/client";
+import { ACTIVE_CHAIN, suiClient, whisper, PACKAGE_ID, REGISTRY_ID } from "./whisper/client";
 import { useWhisperKeys } from "./whisper/useWhisperKeys";
+import { useDevSession } from "./whisper/useDevSession";
+import type { ActiveAccount, DemoMode, TxExecutor } from "./whisper/session";
 import { RegistryView } from "./components/RegistryView";
 import { Feed } from "./components/Feed";
 import { Compose } from "./components/Compose";
@@ -15,8 +17,11 @@ import { RawId } from "./components/RawId";
 const POLL_INTERVAL_MS = 3000;
 
 export function App() {
-  const account = useCurrentAccount();
-  const keysState = useWhisperKeys();
+  const walletAccount = useCurrentAccount();
+  const { mutateAsync: walletSignAndExecute } = useSignAndExecuteTransaction();
+  const walletKeysState = useWhisperKeys();
+  const devSession = useDevSession();
+  const [mode, setMode] = useState<DemoMode>(devSession.enabled ? "dev" : "wallet");
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [feed, setFeed] = useState<FeedEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,14 +29,39 @@ export function App() {
   const [protocolError, setProtocolError] = useState<string | null>(null);
   const cancelled = useRef(false);
 
-  // Run the on-chain protocol_version compatibility check once at mount.
-  // Surfaces a hard error in the UI if the SDK and the deployed package
-  // disagree on wire format — better than silently posting incompatible
-  // envelopes.
+  useEffect(() => {
+    if (!devSession.enabled && mode === "dev") {
+      setMode("wallet");
+    }
+  }, [devSession.enabled, mode]);
+
+  const account: ActiveAccount | null =
+    mode === "dev"
+      ? devSession.account
+      : walletAccount
+        ? { address: walletAccount.address, source: "wallet" }
+        : null;
+
+  const keysState = mode === "dev" ? devSession.keysState : walletKeysState;
+
+  const txExecutor: TxExecutor | null =
+    mode === "dev"
+      ? devSession.executeTransaction
+      : async (transaction) => {
+          const result = await walletSignAndExecute({
+            transaction,
+            chain: ACTIVE_CHAIN,
+          });
+          return { digest: result.digest };
+        };
+
+  // Run the write-compatibility check once at mount. Read paths stay
+  // versioned per envelope, but writing the current V2 format still
+  // requires the deployment to expose the expected protocol_version.
   useEffect(() => {
     let cancelledLocal = false;
     whisper
-      .assertProtocolCompatible()
+      .assertWriteCompatible()
       .catch((e: unknown) => {
         if (cancelledLocal) return;
         setProtocolError(e instanceof Error ? e.message : String(e));
@@ -75,7 +105,27 @@ export function App() {
       <header className="app-header">
         <div className="app-header-row">
           <h1 className="app-title">WHISPER · PROTOCOL</h1>
-          <AuditToggle />
+          <div className="app-header-actions">
+            <div className="mode-toggle" role="tablist" aria-label="session mode">
+              <button
+                type="button"
+                aria-pressed={mode === "wallet"}
+                onClick={() => setMode("wallet")}
+              >
+                wallet mode
+              </button>
+              {devSession.enabled && (
+                <button
+                  type="button"
+                  aria-pressed={mode === "dev"}
+                  onClick={() => setMode("dev")}
+                >
+                  dev mode
+                </button>
+              )}
+            </div>
+            <AuditToggle />
+          </div>
         </div>
         <p className="app-sub">
           live view of the whisper protocol — sui-based private messaging where the chain stores
@@ -93,15 +143,24 @@ export function App() {
         </div>
       </header>
 
-      <IdentityBar registry={registry} keysState={keysState} />
+      <IdentityBar
+        registry={registry}
+        account={account}
+        keysState={keysState}
+        mode={mode}
+        txExecutor={txExecutor}
+        devEnabled={devSession.enabled}
+        devAccounts={devSession.accounts}
+        onSelectDevAccount={devSession.setActiveLabel}
+      />
 
       {protocolError && (
         <div className="notice" style={{ borderColor: "var(--bad)", color: "var(--bad)" }}>
-          <strong>PROTOCOL VERSION MISMATCH ·</strong> {protocolError}
+          <strong>WRITE COMPATIBILITY MISMATCH ·</strong> {protocolError}
           <div style={{ marginTop: "0.5rem", color: "var(--text-faint)" }}>
-            The deployed Move package reports a different protocol_version than this SDK
-            understands. Sending or decrypting envelopes against this package may corrupt data —
-            update the SDK or point the dApp at a compatible deployment.
+            Reading older supported envelopes may still work, but posting the current envelope
+            format against this package is unsafe. Update the SDK or point the dApp at a
+            compatible deployment before sending.
           </div>
         </div>
       )}
@@ -116,18 +175,27 @@ export function App() {
         </div>
       )}
 
+      {mode === "dev" && (
+        <div className="notice" style={{ marginTop: "1.5rem" }}>
+          <strong>DEV MODE ·</strong> transactions are signed locally in-browser against{" "}
+          <RawId value={ACTIVE_CHAIN} kind="bytes" forceRaw />. this bypasses wallet network
+          support and is meant for protocol testing only.
+        </div>
+      )}
+
       {!account ? (
         <div className="notice" style={{ marginTop: "1.5rem" }}>
-          <strong>OBSERVER MODE ·</strong> no wallet connected. you see only what a public indexer
-          would: ciphertext, sender, recipient, schema, and key version. connect a wallet above to
-          unlock encryption + decryption for your address.
+          <strong>{mode === "wallet" ? "OBSERVER MODE" : "DEV SIGNER UNAVAILABLE"} ·</strong>{" "}
+          {mode === "wallet"
+            ? "no wallet connected. you see only what a public indexer would: ciphertext, sender, recipient, schema, and key version. connect a wallet above to unlock encryption + decryption for your address."
+            : "dev signer is enabled but not ready. check the local env config and reload the page."}
         </div>
       ) : !keysState.keys ? (
         <div className="notice" style={{ marginTop: "1.5rem" }}>
-          <strong>SIGN TO UNLOCK ·</strong> click <em>derive</em> in the bar above. your wallet
-          will sign a fixed canonical message; we feed the signature through HKDF to derive an
-          X25519 keypair. the signature itself never leaves the browser. cached in indexeddb so
-          you only sign once per device.
+          <strong>{mode === "wallet" ? "SIGN TO UNLOCK" : "DERIVING DEV KEYS"} ·</strong>{" "}
+          {mode === "wallet"
+            ? "click derive in the bar above. your wallet will sign a fixed canonical message; we feed the signature through HKDF to derive an X25519 keypair. the signature itself never leaves the browser. cached in indexeddb so you only sign once per device."
+            : "the configured dev signer derives a local X25519 keypair from its personal-message signature path before it can register or decrypt."}
         </div>
       ) : (
         <div className="notice" style={{ marginTop: "1.5rem" }}>
@@ -138,15 +206,26 @@ export function App() {
       )}
 
       <div className="section">
-        <Compose registry={registry} keys={keysState.keys} />
+        <Compose
+          registry={registry}
+          keys={keysState.keys}
+          account={account}
+          mode={mode}
+          txExecutor={txExecutor}
+        />
       </div>
 
       <div className="section">
-        <RegistryView entries={registry} loading={loading} />
+        <RegistryView entries={registry} loading={loading} account={account} />
       </div>
 
       <div className="section">
-        <Feed events={feed} loading={loading} keys={keysState.keys} />
+        <Feed
+          events={feed}
+          loading={loading}
+          keys={keysState.keys}
+          account={account}
+        />
       </div>
 
       <footer className="footer">
