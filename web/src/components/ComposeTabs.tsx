@@ -47,7 +47,12 @@ export function ComposeTabs({ registry, keys, account, mode, txExecutor }: Props
           txExecutor={txExecutor}
         />
       ) : (
-        <Commit account={account} mode={mode} txExecutor={txExecutor} />
+        <Commit
+          account={account}
+          mode={mode}
+          txExecutor={txExecutor}
+          registry={registry}
+        />
       )}
     </div>
   );

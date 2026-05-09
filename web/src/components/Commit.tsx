@@ -1,17 +1,18 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   COMMITMENT_DOMAIN_V1,
   HASH_SCHEME_BLAKE2B_256,
   MODULE_COMMITMENTS,
-  buildCommitTx,
-  createCommitment,
-  encodeTextSecret,
+  MODULE_ENVELOPES,
+  SCHEMA_COMMITMENT_OPENING_V1,
+  normalizeAddress,
+  prepareCommitWithSelfOpening,
+  type RegistryEntry,
 } from "@whisper-protocol/sdk";
-import { PACKAGE_ID, suiClient } from "../whisper/client";
+import { PACKAGE_ID, REGISTRY_ID, suiClient } from "../whisper/client";
 import type { ActiveAccount, DemoMode, TxExecutor } from "../whisper/session";
-import { saveOpening } from "../whisper/openings";
 import { RawId } from "./RawId";
 import { formatMist } from "../whisper/gas";
 
@@ -19,6 +20,7 @@ interface Props {
   account: ActiveAccount | null;
   mode: DemoMode;
   txExecutor: TxExecutor | null;
+  registry: RegistryEntry[];
 }
 
 interface GasInfo {
@@ -31,7 +33,9 @@ interface GasInfo {
 interface CommitReceipt {
   txDigest: string;
   commitmentObjectId: string | null;
+  openingEnvelopeId: string | null;
   schema: string;
+  openingSchema: string;
   hashScheme: string;
   commitmentHex: string;
   saltHex: string;
@@ -62,12 +66,18 @@ function gasFromEffects(summary: {
 
 const DEFAULT_SCHEMA = "asset_location_v1";
 
-export function Commit({ account, mode, txExecutor }: Props) {
+export function Commit({ account, mode, txExecutor, registry }: Props) {
   const [schema, setSchema] = useState(DEFAULT_SCHEMA);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<CommitReceipt | null>(null);
+
+  const ownEntry = useMemo<RegistryEntry | null>(() => {
+    if (!account) return null;
+    const norm = normalizeAddress(account.address);
+    return registry.find((e) => e.account === norm) ?? null;
+  }, [account, registry]);
 
   if (!account) {
     return (
@@ -87,9 +97,26 @@ export function Commit({ account, mode, txExecutor }: Props) {
     );
   }
 
+  if (!ownEntry) {
+    return (
+      <div className="window compose-window">
+        <div className="window-header">
+          <span>COMMIT · NOT REGISTERED</span>
+          <span>REGISTER FIRST</span>
+        </div>
+        <div className="window-body">
+          <div className="feed-empty" style={{ padding: "1rem 1ch" }}>
+            commitments self-store their opening as an encrypted envelope addressed to you.
+            register your encryption key on chain first (button in the identity bar above).
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   async function send(e: React.FormEvent) {
     e.preventDefault();
-    if (!account) return;
+    if (!account || !ownEntry) return;
     if (!schema.trim()) {
       setErr("schema is required.");
       return;
@@ -105,14 +132,15 @@ export function Commit({ account, mode, txExecutor }: Props) {
     try {
       if (!txExecutor) throw new Error("no transaction signer available");
 
-      const encoded = encodeTextSecret(text);
-      const { commitment, salt } = createCommitment(encoded);
-      const tx = buildCommitTx({
+      const prepared = prepareCommitWithSelfOpening({
         packageId: PACKAGE_ID,
+        registryId: REGISTRY_ID,
+        authorAddress: account.address,
+        authorRegistryEntry: ownEntry,
         schema,
-        commitment,
+        plaintextSecret: text,
       });
-      const result = await txExecutor(tx);
+      const result = await txExecutor(prepared.tx);
       const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
         digest: result.digest,
         options: { showObjectChanges: true, showEffects: true },
@@ -125,38 +153,32 @@ export function Commit({ account, mode, txExecutor }: Props) {
         throw new Error(`tx failed (${code})${errText ? `: ${errText}` : ""}`);
       }
 
+      // The PTB creates two objects in the same tx: a SecretCommitment
+      // and an EncryptedEnvelope (the self-addressed opening).
       let commitmentObjectId: string | null = null;
-      const target = `${PACKAGE_ID}::${MODULE_COMMITMENTS}::SecretCommitment`;
+      let openingEnvelopeId: string | null = null;
+      const commitmentType = `${PACKAGE_ID}::${MODULE_COMMITMENTS}::SecretCommitment`;
+      const envelopeType = `${PACKAGE_ID}::${MODULE_ENVELOPES}::EncryptedEnvelope`;
       for (const change of full.objectChanges ?? []) {
-        if (change.type === "created" && change.objectType === target) {
-          commitmentObjectId = change.objectId;
-          break;
-        }
-      }
-
-      // Persist the opening locally so we can reveal later. Without
-      // (encodedSecret, salt) the commitment is unrecoverable.
-      if (commitmentObjectId) {
-        saveOpening(commitmentObjectId, {
-          encodedSecret: encoded,
-          salt,
-          commitment,
-          plaintext: text,
-        });
+        if (change.type !== "created") continue;
+        if (change.objectType === commitmentType) commitmentObjectId = change.objectId;
+        else if (change.objectType === envelopeType) openingEnvelopeId = change.objectId;
       }
 
       setReceipt({
         txDigest: full.digest,
         commitmentObjectId,
+        openingEnvelopeId,
         schema,
+        openingSchema: prepared.openingSchema,
         hashScheme: HASH_SCHEME_BLAKE2B_256,
-        commitmentHex: bytesToHex(commitment),
-        saltHex: bytesToHex(salt),
-        plaintextBytes: encoded.length,
+        commitmentHex: bytesToHex(prepared.commitment),
+        saltHex: bytesToHex(prepared.salt),
+        plaintextBytes: prepared.encodedSecret.length,
         authorAddress: account.address,
         package: PACKAGE_ID,
         module: MODULE_COMMITMENTS,
-        function: "commit_secret",
+        function: "commit_secret + post_envelope (PTB)",
         gas: gasFromEffects(full.effects?.gasUsed),
       });
       setText("");
@@ -193,7 +215,7 @@ export function Commit({ account, mode, txExecutor }: Props) {
           <input
             id="commit-text"
             type="text"
-            placeholder="plaintext secret (hashed locally before posting; opening stored in this browser)"
+            placeholder="plaintext secret (hashed locally; opening sealed to you in a self-envelope)"
             value={text}
             onChange={(e) => setText(e.target.value)}
             disabled={busy}
@@ -205,10 +227,16 @@ export function Commit({ account, mode, txExecutor }: Props) {
 
           <div className="compose-status">
             {!text.trim() ? (
-              <>enter a plaintext secret. it will be encoded → salted → hashed locally; only the commitment goes on chain.</>
+              <>
+                enter a plaintext secret. it gets encoded → salted → hashed; the commitment hash
+                goes public on chain, and the (encoded_secret, salt) opening goes on chain too —
+                but inside an encrypted envelope addressed to <strong>you</strong>. one PTB, both
+                land or neither.
+              </>
             ) : (
               <>
-                domain <code>{COMMITMENT_DOMAIN_V1}</code> · hash <code>{HASH_SCHEME_BLAKE2B_256}</code>
+                domain <code>{COMMITMENT_DOMAIN_V1}</code> · hash <code>{HASH_SCHEME_BLAKE2B_256}</code>{" "}
+                · opening schema <code>{SCHEMA_COMMITMENT_OPENING_V1}</code>
               </>
             )}
           </div>
@@ -242,6 +270,20 @@ function CommitReceiptPanel({ receipt }: { receipt: CommitReceipt }) {
             <span style={{ color: "var(--text-faint)" }}>not reported in tx response</span>
           )}
         </dd>
+        <dt>self-opening envelope</dt>
+        <dd>
+          {receipt.openingEnvelopeId ? (
+            <>
+              <RawId value={receipt.openingEnvelopeId} kind="envelope" forceRaw />
+              <div style={{ marginTop: "0.3rem", color: "var(--text-faint)", fontSize: "0.78rem" }}>
+                schema <code>{receipt.openingSchema}</code> · sealed to you on chain — recoverable
+                from any device with this wallet.
+              </div>
+            </>
+          ) : (
+            <span style={{ color: "var(--text-faint)" }}>not reported in tx response</span>
+          )}
+        </dd>
         <dt>author</dt>
         <dd>
           <RawId value={receipt.authorAddress} kind="address" forceRaw />
@@ -261,7 +303,7 @@ function CommitReceiptPanel({ receipt }: { receipt: CommitReceipt }) {
         <dd>
           <code className="receipt-bytes">{receipt.commitmentHex}</code>
         </dd>
-        <dt>salt (kept locally — open with this)</dt>
+        <dt>salt (also encrypted in the self-envelope)</dt>
         <dd>
           <code className="receipt-bytes">{receipt.saltHex}</code>
         </dd>

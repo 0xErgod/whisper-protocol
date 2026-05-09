@@ -74,12 +74,19 @@ export {
   buildOpenTx,
   decodeCommitmentFields,
   fetchCommitment,
+  encodeOpeningPlaintext,
+  decodeOpeningPlaintext,
+  prepareCommitWithSelfOpening,
+  loadOpeningForCommitment,
 } from "./commitments.js";
 export type {
   OnChainCommitment,
   Opening,
   BuildCommitTxArgs,
   BuildOpenTxArgs,
+  OpeningPayloadV1,
+  PrepareCommitWithSelfOpeningArgs,
+  PreparedCommitWithSelfOpening,
 } from "./commitments.js";
 
 export { readOnChainProtocolVersion, assertWriteCompatible } from "./protocol.js";

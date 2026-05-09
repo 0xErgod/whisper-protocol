@@ -1,17 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { blake2b } from "@noble/hashes/blake2b";
+import { x25519 } from "@noble/curves/ed25519";
+import { bytesToHex } from "@noble/hashes/utils";
 import {
   COMMITMENT_DOMAIN_V1,
   CURRENT_COMMITMENT_FORMAT_VERSION,
+  ENCRYPTION_SCHEME,
   HASH_SCHEME_BLAKE2B_256,
+  SCHEMA_COMMITMENT_OPENING_V1,
 } from "../constants.js";
 import {
   commitmentHash,
   createCommitment,
   decodeCommitmentFields,
+  decodeOpeningPlaintext,
+  encodeOpeningPlaintext,
   encodeTextSecret,
+  loadOpeningForCommitment,
+  prepareCommitWithSelfOpening,
   verifyOpening,
 } from "../commitments.js";
+import { encryptForRecipient } from "../encrypt.js";
+import type { RegistryEntry } from "../registry.js";
 
 describe("encodeTextSecret", () => {
   it("normalizes \\r\\n line endings to \\n so commitments stay stable across platforms", () => {
@@ -101,6 +111,218 @@ describe("createCommitment + verifyOpening round-trip", () => {
     const b = createCommitment(secret);
     expect(a.salt).not.toEqual(b.salt);
     expect(a.commitment).not.toEqual(b.commitment);
+  });
+});
+
+describe("commitment_opening_v1 plaintext codec", () => {
+  it("round-trips encoded_secret and salt through JSON+UTF-8", () => {
+    const encodedSecret = encodeTextSecret("attack=north");
+    const salt = new Uint8Array(32).fill(7);
+    const bytes = encodeOpeningPlaintext({ encodedSecret, salt });
+    const decoded = decodeOpeningPlaintext(bytes);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.kind).toBe("commitment_opening_v1");
+    expect(decoded!.encodedSecretHex).toBe(bytesToHex(encodedSecret));
+    expect(decoded!.saltHex).toBe(bytesToHex(salt));
+  });
+
+  it("returns null for malformed JSON", () => {
+    expect(decodeOpeningPlaintext(new TextEncoder().encode("not json"))).toBeNull();
+    expect(decodeOpeningPlaintext(new TextEncoder().encode("{}"))).toBeNull();
+  });
+
+  it("returns null for the wrong kind tag (fail closed on schema drift)", () => {
+    const bad = new TextEncoder().encode(
+      JSON.stringify({ kind: "text_secret_v1", encodedSecretHex: "00", saltHex: "00" }),
+    );
+    expect(decodeOpeningPlaintext(bad)).toBeNull();
+  });
+
+  it("returns null when required hex fields are missing", () => {
+    const missingSalt = new TextEncoder().encode(
+      JSON.stringify({ kind: "commitment_opening_v1", encodedSecretHex: "00" }),
+    );
+    expect(decodeOpeningPlaintext(missingSalt)).toBeNull();
+  });
+});
+
+describe("prepareCommitWithSelfOpening", () => {
+  it("returns a Transaction with both commit_secret and post_envelope move calls", () => {
+    const author = "0x" + "a".repeat(64);
+    const authorPriv = x25519.utils.randomPrivateKey();
+    const authorPub = x25519.getPublicKey(authorPriv);
+    const registryEntry: RegistryEntry = {
+      account: author,
+      encryptionScheme: ENCRYPTION_SCHEME,
+      encryptionPubkey: authorPub,
+      currentKeyId: "0x" + "b".repeat(64),
+      keyVersion: 1,
+      rotatedAtMs: 0,
+    };
+
+    const prepared = prepareCommitWithSelfOpening({
+      packageId: "0x" + "c".repeat(64),
+      registryId: "0x" + "d".repeat(64),
+      authorAddress: author,
+      authorRegistryEntry: registryEntry,
+      schema: "asset_location_v1",
+      plaintextSecret: "fortress at x=42 y=9",
+    });
+
+    // Transaction shape: two move calls in one PTB.
+    const txData = prepared.tx.getData();
+    const moveCalls = txData.commands.filter((c) => "MoveCall" in c);
+    expect(moveCalls).toHaveLength(2);
+    const targets = moveCalls.map((c) => {
+      const mc = (c as { MoveCall: { module: string; function: string } }).MoveCall;
+      return `${mc.module}::${mc.function}`;
+    });
+    expect(targets).toContain("commitments::commit_secret");
+    expect(targets).toContain("envelopes::post_envelope");
+    expect(prepared.commitment.length).toBe(32);
+    expect(prepared.salt.length).toBe(32);
+    expect(verifyOpening(prepared.encodedSecret, prepared.salt, prepared.commitment)).toBe(true);
+    expect(prepared.openingSchema).toBe(SCHEMA_COMMITMENT_OPENING_V1);
+  });
+
+  it("rejects an authorAddress that doesn't match the registry entry", () => {
+    const authorPub = x25519.getPublicKey(x25519.utils.randomPrivateKey());
+    const registryEntry: RegistryEntry = {
+      account: "0xb0b",
+      encryptionScheme: ENCRYPTION_SCHEME,
+      encryptionPubkey: authorPub,
+      currentKeyId: "0x" + "a".repeat(64),
+      keyVersion: 1,
+      rotatedAtMs: 0,
+    };
+    expect(() =>
+      prepareCommitWithSelfOpening({
+        packageId: "0xpkg",
+        registryId: "0xregistry",
+        authorAddress: "0xa11ce",
+        authorRegistryEntry: registryEntry,
+        schema: "x",
+        plaintextSecret: "y",
+      }),
+    ).toThrowError(/does not match/);
+  });
+});
+
+describe("loadOpeningForCommitment", () => {
+  it("decrypts the matching self-addressed envelope and ignores wrong-schema and wrong-commitment candidates", async () => {
+    const authorPriv = x25519.utils.randomPrivateKey();
+    const authorPub = x25519.getPublicKey(authorPriv);
+    const author = "0xa11ce";
+
+    // Three candidates in the inbox:
+    //   (a) wrong schema — text_secret_v1 — should be ignored
+    //   (b) right schema but opens a DIFFERENT commitment — should be ignored
+    //   (c) right schema, right commitment — should be returned
+
+    // (a) text envelope from a friend
+    const envelopeA = encryptForRecipient({
+      senderAddress: "0xfriend",
+      recipientAddress: author,
+      recipientPublicKey: authorPub,
+      plaintext: "hello",
+    });
+
+    // (b) a self-opening for a different secret
+    const otherSecret = encodeTextSecret("different");
+    const otherSalt = new Uint8Array(32).fill(1);
+    const otherCommitment = commitmentHash(otherSecret, otherSalt);
+    const envelopeB = encryptForRecipient({
+      senderAddress: author,
+      recipientAddress: author,
+      recipientPublicKey: authorPub,
+      plaintext: encodeOpeningPlaintext({ encodedSecret: otherSecret, salt: otherSalt }),
+    });
+
+    // (c) the target — a self-opening for the secret we want to find
+    const targetSecret = encodeTextSecret("attack=north");
+    const targetSalt = new Uint8Array(32).fill(7);
+    const targetCommitment = commitmentHash(targetSecret, targetSalt);
+    const envelopeC = encryptForRecipient({
+      senderAddress: author,
+      recipientAddress: author,
+      recipientPublicKey: authorPub,
+      plaintext: encodeOpeningPlaintext({ encodedSecret: targetSecret, salt: targetSalt }),
+    });
+
+    function ownedObjectFor(envId: string, schema: string, sender: string, recipient: string, payload: typeof envelopeA) {
+      return {
+        data: {
+          objectId: envId,
+          content: {
+            dataType: "moveObject",
+            fields: {
+              format_version: "2",
+              sender,
+              recipient,
+              recipient_key_id: { bytes: "0xkey-1" },
+              context: [],
+              schema: Array.from(new TextEncoder().encode(schema)),
+              encryption_scheme: Array.from(new TextEncoder().encode(payload.encryptionScheme)),
+              key_version: "1",
+              eph_pubkey: Array.from(payload.ephPubkey),
+              nonce: Array.from(payload.nonce),
+              ciphertext: Array.from(payload.ciphertext),
+              created_at_ms: "0",
+            },
+          },
+        },
+      };
+    }
+
+    const client = {
+      getOwnedObjects: vi.fn(async () => ({
+        data: [
+          ownedObjectFor("0xenvA", "text_secret_v1", "0xfriend", author, envelopeA),
+          ownedObjectFor("0xenvB", SCHEMA_COMMITMENT_OPENING_V1, author, author, envelopeB),
+          ownedObjectFor("0xenvC", SCHEMA_COMMITMENT_OPENING_V1, author, author, envelopeC),
+        ],
+      })),
+    };
+
+    const found = await loadOpeningForCommitment(
+      client as never,
+      "0xpkg",
+      author,
+      authorPriv,
+      targetCommitment,
+    );
+    expect(found).not.toBeNull();
+    expect(bytesToHex(found!.encodedSecret)).toBe(bytesToHex(targetSecret));
+    expect(bytesToHex(found!.salt)).toBe(bytesToHex(targetSalt));
+    expect(found!.envelope.envelopeId).toBe("0xenvC");
+
+    // Sanity: target NOT in inbox returns null.
+    const notFound = await loadOpeningForCommitment(
+      client as never,
+      "0xpkg",
+      author,
+      authorPriv,
+      otherCommitment,
+    );
+    // Actually otherCommitment IS in inbox (envelope B), so this should also succeed.
+    expect(notFound!.envelope.envelopeId).toBe("0xenvB");
+  });
+
+  it("returns null when no envelope matches the target commitment", async () => {
+    const authorPriv = x25519.utils.randomPrivateKey();
+    const author = "0xa11ce";
+    const client = {
+      getOwnedObjects: vi.fn(async () => ({ data: [] })),
+    };
+    const targetCommitment = new Uint8Array(32).fill(0xff);
+    const result = await loadOpeningForCommitment(
+      client as never,
+      "0xpkg",
+      author,
+      authorPriv,
+      targetCommitment,
+    );
+    expect(result).toBeNull();
   });
 });
 
