@@ -3,6 +3,8 @@ export type {
   WhisperClientConfig,
   PrepareSendArgs,
   PreparedSend,
+  PrepareSendMultiArgs,
+  PreparedMultiSend,
   RecipientKeyResolution,
 } from "./client.js";
 
@@ -13,8 +15,29 @@ export {
 } from "./encrypt.js";
 export type { EncryptedPayload, EncryptInput, DecryptInput } from "./encrypt.js";
 
-export { buildPostEnvelopeTx, buildRegisterKeyTx } from "./tx.js";
-export type { BuildPostEnvelopeArgs, BuildRegisterKeyArgs } from "./tx.js";
+export {
+  encryptForRecipients,
+  tryDecryptMulti,
+  tryDecryptMultiUtf8,
+} from "./encrypt-multi.js";
+export type {
+  MultiEncryptInput,
+  MultiEncryptedPayload,
+  MultiDecryptInput,
+  MultiEncryptRecipient,
+  MultiRecipientEncryptionSuite,
+} from "./encrypt-multi.js";
+
+export {
+  buildPostEnvelopeTx,
+  buildPostMultiEnvelopeTx,
+  buildRegisterKeyTx,
+} from "./tx.js";
+export type {
+  BuildPostEnvelopeArgs,
+  BuildPostMultiEnvelopeArgs,
+  BuildRegisterKeyArgs,
+} from "./tx.js";
 
 export {
   fetchRegistryEntries,
@@ -32,6 +55,16 @@ export {
 } from "./envelope.js";
 export type { OnChainEnvelope } from "./envelope.js";
 
+export {
+  fetchMultiEnvelope,
+  fetchMultiInbox,
+  decodeMultiEnvelopeFields,
+  recipientIndexInMultiEnvelope,
+  canReadMultiEnvelope,
+  assertCanReadMultiEnvelope,
+} from "./multi-envelope.js";
+export type { OnChainMultiEnvelope } from "./multi-envelope.js";
+
 export { readOnChainProtocolVersion, assertWriteCompatible } from "./protocol.js";
 
 export {
@@ -48,7 +81,11 @@ export {
   SCHEMA_TEXT_SECRET_V1,
   LEGACY_ENVELOPE_FORMAT_VERSION,
   CURRENT_ENVELOPE_FORMAT_VERSION,
+  CURRENT_MULTI_ENVELOPE_FORMAT_VERSION,
+  MAX_RECIPIENTS,
   ENCRYPTION_SCHEME,
+  ENCRYPTION_SCHEME_MULTI,
   HKDF_INFO,
+  HKDF_INFO_MULTI_WRAP,
   SDK_PROTOCOL_VERSION,
 } from "./constants.js";

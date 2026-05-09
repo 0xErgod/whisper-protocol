@@ -2,9 +2,12 @@ import type { SuiClient } from "@mysten/sui/client";
 import { MODULE, ENCRYPTION_SCHEME, LEGACY_ENVELOPE_FORMAT_VERSION } from "./constants.js";
 import { normalizeAddress } from "./address.js";
 import {
+  bytesArrayFromUnknown,
   bytesFromArray,
   detectEnvelopeFormatVersion,
+  idArrayFromUnknown,
   idFromUnknown,
+  numberArrayFromUnknown,
   stringFromBytes,
 } from "./envelope-codec.js";
 
@@ -45,7 +48,28 @@ export interface FeedEnvelopeEvent {
   gas: GasInfo | null;
 }
 
-export type FeedEvent = FeedKeyEvent | FeedEnvelopeEvent;
+export interface FeedMultiEnvelopeEvent {
+  kind: "multi-envelope";
+  txDigest: string;
+  timestampMs: number;
+  envelopeId: string;
+  formatVersion: number;
+  sender: string;
+  recipients: string[];
+  recipientKeyIds: string[];
+  recipientKeyVersions: number[];
+  context: Uint8Array;
+  schema: string;
+  encryptionScheme: string;
+  ephPubkey: Uint8Array;
+  payloadNonce: Uint8Array;
+  ciphertext: Uint8Array;
+  wrappedKeys: Uint8Array[];
+  wrapNonces: Uint8Array[];
+  gas: GasInfo | null;
+}
+
+export type FeedEvent = FeedKeyEvent | FeedEnvelopeEvent | FeedMultiEnvelopeEvent;
 
 interface SuiEventEnvelope {
   id: { txDigest: string; eventSeq: string };
@@ -53,7 +77,8 @@ interface SuiEventEnvelope {
   parsedJson: Record<string, unknown>;
 }
 
-interface EnvelopeSnapshot {
+interface SingleEnvelopeSnapshot {
+  kind: "single";
   formatVersion: number;
   recipientKeyId: string | null;
   encryptionScheme: string;
@@ -61,6 +86,19 @@ interface EnvelopeSnapshot {
   nonce: Uint8Array;
   ciphertext: Uint8Array;
 }
+
+interface MultiEnvelopeSnapshot {
+  kind: "multi";
+  formatVersion: number;
+  encryptionScheme: string;
+  ephPubkey: Uint8Array;
+  payloadNonce: Uint8Array;
+  ciphertext: Uint8Array;
+  wrappedKeys: Uint8Array[];
+  wrapNonces: Uint8Array[];
+}
+
+type EnvelopeSnapshot = SingleEnvelopeSnapshot | MultiEnvelopeSnapshot;
 
 async function fetchEnvelopeSnapshots(
   suiClient: SuiClient,
@@ -76,16 +114,31 @@ async function fetchEnvelopeSnapshots(
     if (!o.data?.objectId || !o.data.content) continue;
     const f = (o.data.content as { fields?: Record<string, unknown> }).fields;
     if (!f) continue;
-    out.set(o.data.objectId, {
-      formatVersion: detectEnvelopeFormatVersion(f),
-      recipientKeyId: idFromUnknown(f.recipient_key_id),
-      encryptionScheme: "encryption_scheme" in f
-        ? stringFromBytes(f.encryption_scheme)
-        : ENCRYPTION_SCHEME,
-      ephPubkey: bytesFromArray(f.eph_pubkey),
-      nonce: bytesFromArray(f.nonce),
-      ciphertext: bytesFromArray(f.ciphertext),
-    });
+    const formatVersion = detectEnvelopeFormatVersion(f);
+    if (formatVersion === 3) {
+      out.set(o.data.objectId, {
+        kind: "multi",
+        formatVersion,
+        encryptionScheme: stringFromBytes(f.encryption_scheme),
+        ephPubkey: bytesFromArray(f.eph_pubkey),
+        payloadNonce: bytesFromArray(f.payload_nonce),
+        ciphertext: bytesFromArray(f.ciphertext),
+        wrappedKeys: bytesArrayFromUnknown(f.wrapped_keys),
+        wrapNonces: bytesArrayFromUnknown(f.wrap_nonces),
+      });
+    } else {
+      out.set(o.data.objectId, {
+        kind: "single",
+        formatVersion,
+        recipientKeyId: idFromUnknown(f.recipient_key_id),
+        encryptionScheme: "encryption_scheme" in f
+          ? stringFromBytes(f.encryption_scheme)
+          : ENCRYPTION_SCHEME,
+        ephPubkey: bytesFromArray(f.eph_pubkey),
+        nonce: bytesFromArray(f.nonce),
+        ciphertext: bytesFromArray(f.ciphertext),
+      });
+    }
   }
   return out;
 }
@@ -134,8 +187,9 @@ export async function fetchFeed(
   const limit = options.limit ?? 50;
   const KEY_EVENT_TYPE = `${options.packageId}::${MODULE}::EncryptionKeyRegistered`;
   const ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE}::EnvelopePosted`;
+  const MULTI_ENVELOPE_EVENT_TYPE = `${options.packageId}::${MODULE}::MultiEnvelopePosted`;
 
-  const [keyRes, envRes] = await Promise.all([
+  const [keyRes, envRes, multiRes] = await Promise.all([
     suiClient.queryEvents({
       query: { MoveEventType: KEY_EVENT_TYPE },
       limit,
@@ -146,16 +200,23 @@ export async function fetchFeed(
       limit,
       order: "descending",
     }),
+    suiClient.queryEvents({
+      query: { MoveEventType: MULTI_ENVELOPE_EVENT_TYPE },
+      limit,
+      order: "descending",
+    }),
   ]);
 
-  const envelopeIds = (envRes.data as SuiEventEnvelope[]).map(
-    (e) => String(e.parsedJson.envelope_id ?? ""),
-  );
+  const envelopeIds = [
+    ...(envRes.data as SuiEventEnvelope[]).map((e) => String(e.parsedJson.envelope_id ?? "")),
+    ...(multiRes.data as SuiEventEnvelope[]).map((e) => String(e.parsedJson.envelope_id ?? "")),
+  ];
   const snapshots = await fetchEnvelopeSnapshots(suiClient, envelopeIds.filter(Boolean));
 
   const allDigests = [
     ...(keyRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
     ...(envRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
+    ...(multiRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
   ];
   const gas = options.withGas !== false
     ? await fetchGasForTxs(suiClient, allDigests)
@@ -179,9 +240,10 @@ export async function fetchFeed(
     const j = e.parsedJson;
     const envelopeId = String(j.envelope_id ?? "");
     const snapshot = snapshots.get(envelopeId);
+    const singleSnapshot = snapshot && snapshot.kind === "single" ? snapshot : null;
     const formatVersion = "format_version" in j
       ? Number(j.format_version ?? 0)
-      : snapshot?.formatVersion ?? LEGACY_ENVELOPE_FORMAT_VERSION;
+      : singleSnapshot?.formatVersion ?? LEGACY_ENVELOPE_FORMAT_VERSION;
     return {
       kind: "envelope",
       txDigest: e.id.txDigest,
@@ -190,21 +252,51 @@ export async function fetchFeed(
       formatVersion,
       sender: normalizeAddress(String(j.sender ?? "")),
       recipient: normalizeAddress(String(j.recipient ?? "")),
-      recipientKeyId: idFromUnknown(j.recipient_key_id) ?? snapshot?.recipientKeyId ?? null,
+      recipientKeyId: idFromUnknown(j.recipient_key_id) ?? singleSnapshot?.recipientKeyId ?? null,
       context: bytesFromArray(j.context),
       schema: stringFromBytes(j.schema),
       encryptionScheme: "encryption_scheme" in j
         ? stringFromBytes(j.encryption_scheme)
-        : snapshot?.encryptionScheme ?? ENCRYPTION_SCHEME,
+        : singleSnapshot?.encryptionScheme ?? ENCRYPTION_SCHEME,
       keyVersion: Number(j.key_version ?? 0),
-      ephPubkey: snapshot?.ephPubkey ?? new Uint8Array(),
-      nonce: snapshot?.nonce ?? new Uint8Array(),
-      ciphertext: snapshot?.ciphertext ?? new Uint8Array(),
+      ephPubkey: singleSnapshot?.ephPubkey ?? new Uint8Array(),
+      nonce: singleSnapshot?.nonce ?? new Uint8Array(),
+      ciphertext: singleSnapshot?.ciphertext ?? new Uint8Array(),
       gas: gas.get(e.id.txDigest) ?? null,
     };
   });
 
-  const merged: FeedEvent[] = [...keyEvents, ...envelopeEvents];
+  const multiEvents: FeedMultiEnvelopeEvent[] = (multiRes.data as SuiEventEnvelope[]).map((e) => {
+    const j = e.parsedJson;
+    const envelopeId = String(j.envelope_id ?? "");
+    const snapshot = snapshots.get(envelopeId);
+    const multiSnapshot = snapshot && snapshot.kind === "multi" ? snapshot : null;
+    const recipients = Array.isArray(j.recipients)
+      ? (j.recipients as unknown[]).map((r) => normalizeAddress(String(r ?? "")))
+      : [];
+    return {
+      kind: "multi-envelope",
+      txDigest: e.id.txDigest,
+      timestampMs: Number(e.timestampMs ?? 0),
+      envelopeId,
+      formatVersion: Number(j.format_version ?? multiSnapshot?.formatVersion ?? 3),
+      sender: normalizeAddress(String(j.sender ?? "")),
+      recipients,
+      recipientKeyIds: idArrayFromUnknown(j.recipient_key_ids),
+      recipientKeyVersions: numberArrayFromUnknown(j.recipient_key_versions),
+      context: bytesFromArray(j.context),
+      schema: stringFromBytes(j.schema),
+      encryptionScheme: stringFromBytes(j.encryption_scheme),
+      ephPubkey: multiSnapshot?.ephPubkey ?? new Uint8Array(),
+      payloadNonce: multiSnapshot?.payloadNonce ?? new Uint8Array(),
+      ciphertext: multiSnapshot?.ciphertext ?? new Uint8Array(),
+      wrappedKeys: multiSnapshot?.wrappedKeys ?? [],
+      wrapNonces: multiSnapshot?.wrapNonces ?? [],
+      gas: gas.get(e.id.txDigest) ?? null,
+    };
+  });
+
+  const merged: FeedEvent[] = [...keyEvents, ...envelopeEvents, ...multiEvents];
   merged.sort((a, b) => b.timestampMs - a.timestampMs);
   return merged;
 }

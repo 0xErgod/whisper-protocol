@@ -54,13 +54,49 @@ export function detectEnvelopeFormatVersion(fields: Record<string, unknown>): nu
 }
 
 export function canDecodeEnvelopeFormatVersion(formatVersion: number): boolean {
+  return (
+    formatVersion === LEGACY_ENVELOPE_FORMAT_VERSION ||
+    formatVersion === 2 ||
+    formatVersion === 3
+  );
+}
+
+export function isSingleRecipientEnvelopeFormatVersion(formatVersion: number): boolean {
   return formatVersion === LEGACY_ENVELOPE_FORMAT_VERSION || formatVersion === 2;
+}
+
+export function isMultiRecipientEnvelopeFormatVersion(formatVersion: number): boolean {
+  return formatVersion === 3;
 }
 
 export function assertSupportedEnvelopeFormatVersion(formatVersion: number): void {
   if (!canDecodeEnvelopeFormatVersion(formatVersion)) {
     throw new UnsupportedEnvelopeFormatVersionError(formatVersion);
   }
+}
+
+export function bytesArrayFromUnknown(input: unknown): Uint8Array[] {
+  if (!Array.isArray(input)) return [];
+  return (input as unknown[]).map((entry) => bytesFromArray(entry));
+}
+
+export function stringArrayFromUnknown(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return (input as unknown[]).map((entry) => String(entry ?? ""));
+}
+
+export function idArrayFromUnknown(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return (input as unknown[]).map((entry) => idFromUnknown(entry) ?? "").filter(Boolean);
+}
+
+export function numberArrayFromUnknown(input: unknown): number[] {
+  if (!Array.isArray(input)) return [];
+  return (input as unknown[]).map((entry) => {
+    if (typeof entry === "number") return entry;
+    if (typeof entry === "string") return Number(entry);
+    return 0;
+  });
 }
 
 const legacyEnvelopeMetadataDecoder: EnvelopeDecoder<Record<string, unknown>, EnvelopeCompatibilityMetadata> = {
