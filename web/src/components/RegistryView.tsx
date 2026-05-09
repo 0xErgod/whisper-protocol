@@ -1,12 +1,13 @@
 import { bytesToHex } from "@noble/hashes/utils";
-import { useCurrentAccount } from "@mysten/dapp-kit";
 import { normalizeAddress, type RegistryEntry } from "@whisper-protocol/sdk";
+import type { ActiveAccount } from "../whisper/session";
 import { RawId } from "./RawId";
 import { useAudit } from "../perspective/audit";
 
 interface Props {
   entries: RegistryEntry[];
   loading: boolean;
+  account: ActiveAccount | null;
 }
 
 function formatTime(ms: number): string {
@@ -15,8 +16,7 @@ function formatTime(ms: number): string {
   return d.toISOString().replace("T", " ").slice(5, 19);
 }
 
-export function RegistryView({ entries, loading }: Props) {
-  const account = useCurrentAccount();
+export function RegistryView({ entries, loading, account }: Props) {
   const { rawIds } = useAudit();
   const youAddress = account ? normalizeAddress(account.address) : null;
   return (

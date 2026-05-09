@@ -1,5 +1,11 @@
 import { Transaction } from "@mysten/sui/transactions";
-import { CLOCK_ID, MODULE, SCHEMA_TEXT_SECRET_V1, ENCRYPTION_SCHEME } from "./constants.js";
+import {
+  CLOCK_ID,
+  CURRENT_ENVELOPE_FORMAT_VERSION,
+  MODULE,
+  SCHEMA_TEXT_SECRET_V1,
+  ENCRYPTION_SCHEME,
+} from "./constants.js";
 import type { EncryptedPayload } from "./encrypt.js";
 
 export interface BuildPostEnvelopeArgs {
@@ -8,6 +14,8 @@ export interface BuildPostEnvelopeArgs {
   recipientAddress: string;
   schema?: string;
   context?: Uint8Array;
+  formatVersion?: number;
+  recipientKeyId: string;
   keyVersion: number;
   payload: EncryptedPayload;
 }
@@ -29,6 +37,9 @@ export function buildPostEnvelopeTx(args: BuildPostEnvelopeArgs): Transaction {
       tx.pure.address(args.recipientAddress),
       tx.pure.vector("u8", Array.from(args.context ?? new Uint8Array())),
       tx.pure.vector("u8", Array.from(schemaBytes)),
+      tx.pure.u16(args.formatVersion ?? CURRENT_ENVELOPE_FORMAT_VERSION),
+      tx.pure.id(args.recipientKeyId),
+      tx.pure.vector("u8", Array.from(new TextEncoder().encode(args.payload.encryptionScheme))),
       tx.pure.u64(BigInt(args.keyVersion)),
       tx.pure.vector("u8", Array.from(args.payload.ephPubkey)),
       tx.pure.vector("u8", Array.from(args.payload.nonce)),

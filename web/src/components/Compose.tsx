@@ -1,24 +1,25 @@
 import { useMemo, useState } from "react";
-import {
-  useCurrentAccount,
-  useSignAndExecuteTransaction,
-} from "@mysten/dapp-kit";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   MODULE,
+  SCHEMA_TEXT_SECRET_V1,
   normalizeAddress,
   type RegistryEntry,
 } from "@whisper-protocol/sdk";
 import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
-import { whisper, PACKAGE_ID, REGISTRY_ID, ACTIVE_CHAIN } from "../whisper/client";
+import { whisper, PACKAGE_ID, REGISTRY_ID } from "../whisper/client";
 import { suiClient } from "../whisper/client";
+import type { ActiveAccount, DemoMode, TxExecutor } from "../whisper/session";
 import { RawId } from "./RawId";
 import { formatMist } from "../whisper/gas";
 
 interface Props {
   registry: RegistryEntry[];
   keys: DerivedEncryptionKeypair | null;
+  account: ActiveAccount | null;
+  mode: DemoMode;
+  txExecutor: TxExecutor | null;
 }
 
 interface GasInfo {
@@ -31,7 +32,9 @@ interface GasInfo {
 interface Receipt {
   txDigest: string;
   envelopeId: string | null;
+  formatVersion: number;
   recipient: string;
+  recipientKeyId: string;
   keyVersion: number;
   ephPubkeyHex: string;
   nonceHex: string;
@@ -65,9 +68,7 @@ function gasFromEffects(summary: {
   };
 }
 
-export function Compose({ registry, keys }: Props) {
-  const account = useCurrentAccount();
-  const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+export function Compose({ registry, keys, account, mode, txExecutor }: Props) {
   const [recipient, setRecipient] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -94,7 +95,9 @@ export function Compose({ registry, keys }: Props) {
         </div>
         <div className="window-body">
           <div className="feed-empty" style={{ padding: "1rem 1ch" }}>
-            connect a sui wallet (top-right) to send a secret on-chain.
+            {mode === "wallet"
+              ? "connect a sui wallet (top-right) to send a secret on-chain."
+              : "configure the dev signer to send a secret on-chain."}
           </div>
         </div>
       </div>
@@ -146,10 +149,8 @@ export function Compose({ registry, keys }: Props) {
         plaintext: text,
       });
 
-      const result = await signAndExecute({
-        transaction: prepared.tx,
-        chain: ACTIVE_CHAIN,
-      });
+      if (!txExecutor) throw new Error("no transaction signer available");
+      const result = await txExecutor(prepared.tx);
 
       // dapp-kit's default execute path returns digest + raw effects only;
       // pull full effects via the SuiClient for receipt details.
@@ -180,14 +181,16 @@ export function Compose({ registry, keys }: Props) {
       setReceipt({
         txDigest: full.digest,
         envelopeId,
+        formatVersion: prepared.formatVersion,
         recipient: prepared.recipient.account,
+        recipientKeyId: prepared.recipientKeyId,
         keyVersion: prepared.keyVersion,
         ephPubkeyHex: bytesToHex(prepared.payload.ephPubkey),
         nonceHex: bytesToHex(prepared.payload.nonce),
         ciphertextHex: bytesToHex(prepared.payload.ciphertext),
         ciphertextBytes: prepared.payload.ciphertext.length,
         plaintextBytes: new TextEncoder().encode(text).length,
-        schema: "text_secret_v1",
+        schema: SCHEMA_TEXT_SECRET_V1,
         scheme: prepared.payload.encryptionScheme,
         senderAddress: account.address,
         package: PACKAGE_ID,
@@ -254,7 +257,7 @@ export function Compose({ registry, keys }: Props) {
             ) : validRecipientEntry ? (
               <>
                 will encrypt to <RawId value={validRecipientEntry.account} kind="address" /> ·{" "}
-                key v{validRecipientEntry.keyVersion} · scheme {validRecipientEntry.encryptionScheme}
+                key v{validRecipientEntry.keyVersion} · suite {validRecipientEntry.encryptionScheme}
               </>
             ) : (
               <span className="compose-status error">
@@ -311,9 +314,15 @@ function ReceiptPanel({ receipt }: { receipt: Receipt }) {
         </dd>
         <dt>declared key_version</dt>
         <dd>v{receipt.keyVersion} (asserted on-chain against current registry)</dd>
+        <dt>format_version</dt>
+        <dd>v{receipt.formatVersion}</dd>
+        <dt>recipient key ref</dt>
+        <dd>
+          <RawId value={receipt.recipientKeyId} kind="bytes" forceRaw />
+        </dd>
         <dt>schema</dt>
         <dd>{receipt.schema}</dd>
-        <dt>scheme</dt>
+        <dt>suite</dt>
         <dd style={{ color: "var(--text-dim)" }}>{receipt.scheme}</dd>
         <dt>plaintext bytes</dt>
         <dd>

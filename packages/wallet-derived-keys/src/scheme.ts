@@ -1,4 +1,5 @@
 import { blake2b } from "@noble/hashes/blake2b";
+import { bytesToHex, normalizeAddress } from "./utils.js";
 
 /**
  * Sui signature schemes recognized by the wallet-standard. The flag byte
@@ -15,16 +16,6 @@ export const SUI_SIGNATURE_FLAGS = {
 } as const;
 
 export type SuiSignatureScheme = keyof typeof SUI_SIGNATURE_FLAGS;
-
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-}
-
-function normalizeAddress(addr: string): string {
-  if (!addr) return addr;
-  const lower = addr.toLowerCase();
-  return lower.startsWith("0x") ? lower : `0x${lower}`;
-}
 
 /**
  * Compute a Sui address from a (flag, publicKey) pair.

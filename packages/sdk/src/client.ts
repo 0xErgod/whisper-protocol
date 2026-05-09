@@ -1,30 +1,36 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { encryptForRecipient, tryDecrypt, tryDecryptUtf8 } from "./encrypt.js";
 import type { EncryptedPayload } from "./encrypt.js";
+import { buildPostEnvelopeTx, buildRegisterKeyTx } from "./tx.js";
 import {
-  buildPostEnvelopeTx,
-  buildRegisterKeyTx,
-} from "./tx.js";
-import {
+  fetchEncryptionKeyRecord,
   fetchRegistryEntries,
   fetchRegistryEntry,
 } from "./registry.js";
-import type { RegistryEntry } from "./registry.js";
-import { fetchEnvelope, fetchInbox } from "./envelope.js";
+import type { EncryptionKeyRecord, RegistryEntry } from "./registry.js";
+import {
+  assertCanReadEnvelope,
+  canReadEnvelope,
+  fetchEnvelope,
+  fetchInbox,
+} from "./envelope.js";
 import type { OnChainEnvelope } from "./envelope.js";
 import { normalizeAddress } from "./address.js";
-import { SDK_PROTOCOL_VERSION } from "./constants.js";
-import { readOnChainProtocolVersion } from "./protocol.js";
+import {
+  CURRENT_ENVELOPE_FORMAT_VERSION,
+  ENCRYPTION_SCHEME,
+  SDK_PROTOCOL_VERSION,
+} from "./constants.js";
+import {
+  assertWriteCompatible,
+  readOnChainProtocolVersion,
+} from "./protocol.js";
+import { requireEncryptionSuite, supportsEncryptionScheme } from "./suites.js";
 
 export interface WhisperClientConfig {
   suiClient: SuiClient;
   packageId: string;
   registryId: string;
-  /**
-   * Expected on-chain protocol_version. Defaults to the SDK's compiled-in
-   * SDK_PROTOCOL_VERSION. Override only when intentionally targeting a
-   * different deployment.
-   */
   protocolVersion?: number;
 }
 
@@ -32,36 +38,31 @@ export interface PrepareSendArgs {
   senderAddress: string;
   recipientAddress: string;
   plaintext: Uint8Array | string;
-  /** Schema string written into the envelope; defaults to `text_secret_v1`. */
   schema?: string;
-  /** Optional opaque indexer tag stored in the envelope's `context` field. */
   context?: Uint8Array;
 }
 
 export interface PreparedSend {
-  /** Built but unsigned transaction — caller signs and executes it. */
   tx: ReturnType<typeof buildPostEnvelopeTx>;
-  /** The encrypted bytes the transaction will post. Useful for receipts. */
   payload: EncryptedPayload;
-  /** Recipient registry entry the SDK encrypted to. */
   recipient: RegistryEntry;
-  /** Asserted on-chain key_version. Sender races a rotation = abort. */
+  formatVersion: number;
+  recipientKeyId: string;
   keyVersion: number;
 }
 
-/**
- * Convenience facade around the protocol primitives. Holds zero secrets;
- * every encryption step takes the caller's keys as explicit input.
- */
+export interface RecipientKeyResolution {
+  recipientKeyId: string | null;
+  keyVersion: number;
+  encryptionScheme: string;
+}
+
 export class WhisperClient {
   readonly suiClient: SuiClient;
   readonly packageId: string;
   readonly registryId: string;
   readonly expectedProtocolVersion: number;
 
-  // Memoised result of the on-chain protocol_version() view call. Cached
-  // for the lifetime of the client — package id is immutable, so the
-  // version can't change under us.
   private _onChainProtocolVersion: number | null = null;
   private _protocolCheckPromise: Promise<number> | null = null;
 
@@ -72,17 +73,10 @@ export class WhisperClient {
     this.expectedProtocolVersion = config.protocolVersion ?? SDK_PROTOCOL_VERSION;
   }
 
-  /**
-   * Read the deployed Move module's `protocol_version()` and assert it
-   * matches `expectedProtocolVersion`. Cached after the first call.
-   *
-   * Throws if the deployed module reports a different version than the
-   * SDK was built for, or if the deployed package predates the
-   * protocol_version function (pre-SDK-compat deployments). Callers
-   * should run this once at startup before any send/decrypt work to
-   * avoid silently posting envelopes against an incompatible registry.
-   */
-  async assertProtocolCompatible(): Promise<number> {
+  async assertWriteCompatible(input?: {
+    formatVersion?: number;
+    encryptionScheme?: string;
+  }): Promise<number> {
     if (this._onChainProtocolVersion !== null) {
       return this._onChainProtocolVersion;
     }
@@ -90,12 +84,11 @@ export class WhisperClient {
       return this._protocolCheckPromise;
     }
     this._protocolCheckPromise = (async () => {
-      const onChain = await readOnChainProtocolVersion(this.suiClient, this.packageId);
-      if (onChain !== this.expectedProtocolVersion) {
-        throw new Error(
-          `Whisper protocol version mismatch: deployed package ${this.packageId} reports protocol_version=${onChain}, but this SDK was built for ${this.expectedProtocolVersion}. Upgrade the SDK (or downgrade the package) before continuing — wire formats may differ.`,
-        );
-      }
+      const onChain = await assertWriteCompatible(this.suiClient, this.packageId, {
+        expectedProtocolVersion: this.expectedProtocolVersion,
+        formatVersion: input?.formatVersion ?? CURRENT_ENVELOPE_FORMAT_VERSION,
+        encryptionScheme: input?.encryptionScheme ?? ENCRYPTION_SCHEME,
+      });
       this._onChainProtocolVersion = onChain;
       return onChain;
     })();
@@ -106,7 +99,10 @@ export class WhisperClient {
     }
   }
 
-  /** Return the cached on-chain protocol version, or null if unchecked yet. */
+  async assertProtocolCompatible(): Promise<number> {
+    return this.assertWriteCompatible();
+  }
+
   get onChainProtocolVersion(): number | null {
     return this._onChainProtocolVersion;
   }
@@ -119,12 +115,20 @@ export class WhisperClient {
     return fetchRegistryEntry(this.suiClient, this.registryId, account);
   }
 
+  fetchEncryptionKeyRecord(keyObjectId: string): Promise<EncryptionKeyRecord | null> {
+    return fetchEncryptionKeyRecord(this.suiClient, keyObjectId);
+  }
+
   fetchInbox(ownerAddress: string): Promise<OnChainEnvelope[]> {
     return fetchInbox(this.suiClient, this.packageId, ownerAddress);
   }
 
   fetchEnvelope(envelopeId: string): Promise<OnChainEnvelope | null> {
     return fetchEnvelope(this.suiClient, envelopeId);
+  }
+
+  canReadEnvelope(envelope: Pick<OnChainEnvelope, "formatVersion" | "encryptionScheme">): boolean {
+    return canReadEnvelope(envelope);
   }
 
   buildRegisterKeyTx(encryptionPublicKey: Uint8Array, encryptionScheme?: string) {
@@ -136,12 +140,6 @@ export class WhisperClient {
     });
   }
 
-  /**
-   * Look up the recipient, encrypt the plaintext, and build a
-   * post_envelope transaction. The returned `tx` is unsigned — caller
-   * signs it with the sender's wallet (`signAndExecute`,
-   * `useSignAndExecuteTransaction`, or equivalent).
-   */
   async prepareSend(args: PrepareSendArgs): Promise<PreparedSend> {
     const recipient = await this.fetchRegistryEntry(args.recipientAddress);
     if (!recipient) {
@@ -150,6 +148,7 @@ export class WhisperClient {
       );
     }
     const payload = encryptForRecipient({
+      encryptionScheme: recipient.encryptionScheme,
       senderAddress: args.senderAddress,
       recipientAddress: args.recipientAddress,
       recipientPublicKey: recipient.encryptionPubkey,
@@ -161,25 +160,36 @@ export class WhisperClient {
       recipientAddress: args.recipientAddress,
       schema: args.schema,
       context: args.context,
+      formatVersion: CURRENT_ENVELOPE_FORMAT_VERSION,
+      recipientKeyId: recipient.currentKeyId,
       keyVersion: recipient.keyVersion,
       payload,
     });
-    return { tx, payload, recipient, keyVersion: recipient.keyVersion };
+    return {
+      tx,
+      payload,
+      recipient,
+      formatVersion: CURRENT_ENVELOPE_FORMAT_VERSION,
+      recipientKeyId: recipient.currentKeyId,
+      keyVersion: recipient.keyVersion,
+    };
   }
 
-  /**
-   * Decrypt an envelope addressed to the given address using the
-   * provided X25519 private key. Returns `null` on any failure
-   * (wrong key, wrong recipient, tampered ciphertext).
-   */
+  assertCanReadEnvelope(
+    envelope: Pick<OnChainEnvelope, "formatVersion" | "encryptionScheme">,
+  ): void {
+    assertCanReadEnvelope(envelope);
+  }
+
   decryptEnvelope(input: {
     envelope: Pick<
       OnChainEnvelope,
-      "sender" | "recipient" | "ephPubkey" | "nonce" | "ciphertext"
+      "formatVersion" | "sender" | "recipient" | "encryptionScheme" | "ephPubkey" | "nonce" | "ciphertext"
     >;
     recipientAddress: string;
     recipientPrivateKey: Uint8Array;
   }): Uint8Array | null {
+    this.assertCanReadEnvelope(input.envelope);
     if (
       normalizeAddress(input.envelope.recipient) !==
       normalizeAddress(input.recipientAddress)
@@ -188,6 +198,49 @@ export class WhisperClient {
     }
     return tryDecrypt({
       recipientPrivateKey: input.recipientPrivateKey,
+      encryptionScheme: input.envelope.encryptionScheme,
+      senderAddress: input.envelope.sender,
+      recipientAddress: input.envelope.recipient,
+      ephPubkey: input.envelope.ephPubkey,
+      nonce: input.envelope.nonce,
+      ciphertext: input.envelope.ciphertext,
+    });
+  }
+
+  async decryptEnvelopeWithKeyResolver(input: {
+    envelope: Pick<
+      OnChainEnvelope,
+      | "formatVersion"
+      | "sender"
+      | "recipient"
+      | "recipientKeyId"
+      | "encryptionScheme"
+      | "keyVersion"
+      | "ephPubkey"
+      | "nonce"
+      | "ciphertext"
+    >;
+    recipientAddress: string;
+    resolveRecipientPrivateKey: (
+      key: RecipientKeyResolution,
+    ) => Promise<Uint8Array | null> | Uint8Array | null;
+  }): Promise<Uint8Array | null> {
+    this.assertCanReadEnvelope(input.envelope);
+    if (
+      normalizeAddress(input.envelope.recipient) !==
+      normalizeAddress(input.recipientAddress)
+    ) {
+      return null;
+    }
+    const recipientPrivateKey = await input.resolveRecipientPrivateKey({
+      recipientKeyId: input.envelope.recipientKeyId,
+      keyVersion: input.envelope.keyVersion,
+      encryptionScheme: input.envelope.encryptionScheme,
+    });
+    if (!recipientPrivateKey) return null;
+    return requireEncryptionSuite(input.envelope.encryptionScheme).decrypt({
+      recipientPrivateKey,
+      encryptionScheme: input.envelope.encryptionScheme,
       senderAddress: input.envelope.sender,
       recipientAddress: input.envelope.recipient,
       ephPubkey: input.envelope.ephPubkey,
@@ -201,8 +254,8 @@ export class WhisperClient {
     return bytes === null ? null : new TextDecoder().decode(bytes);
   }
 
-  // Re-exports of the pure helpers, surfaced for convenience.
   static encrypt = encryptForRecipient;
   static tryDecrypt = tryDecrypt;
   static tryDecryptUtf8 = tryDecryptUtf8;
+  static readOnChainProtocolVersion = readOnChainProtocolVersion;
 }

@@ -1,18 +1,22 @@
 import { Transaction } from "@mysten/sui/transactions";
 import type { SuiClient } from "@mysten/sui/client";
-import { MODULE } from "./constants.js";
+import {
+  CURRENT_ENVELOPE_FORMAT_VERSION,
+  ENCRYPTION_SCHEME,
+  MODULE,
+} from "./constants.js";
+import { WriteCompatibilityError } from "./errors.js";
+import { assertSupportedEnvelopeFormatVersion } from "./envelope-codec.js";
+import { requireEncryptionSuite } from "./suites.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-/**
- * Read the deployed Move module's `protocol_version()` view function via
- * `devInspectTransactionBlock`. Returns the `u32` value, or throws if the
- * package doesn't expose `protocol_version` (i.e., it predates the SDK
- * compatibility check).
- *
- * Uses the zero address as the dev-inspect sender — the call is a pure
- * view, doesn't read or mutate any objects, so any address works.
- */
+export interface AssertWriteCompatibleOptions {
+  expectedProtocolVersion: number;
+  formatVersion?: number;
+  encryptionScheme?: string;
+}
+
 export async function readOnChainProtocolVersion(
   suiClient: SuiClient,
   packageId: string,
@@ -38,7 +42,6 @@ export async function readOnChainProtocolVersion(
     );
   }
 
-  // returnValues is [bytes, type][]. u32 = 4 bytes little-endian.
   const [bytes, type] = returns[0]!;
   if (type !== "u32") {
     throw new Error(
@@ -56,4 +59,23 @@ export async function readOnChainProtocolVersion(
     (bytes[2]! << 16) |
     (bytes[3]! << 24)
   ) >>> 0;
+}
+
+export async function assertWriteCompatible(
+  suiClient: SuiClient,
+  packageId: string,
+  options: AssertWriteCompatibleOptions,
+): Promise<number> {
+  const formatVersion = options.formatVersion ?? CURRENT_ENVELOPE_FORMAT_VERSION;
+  const encryptionScheme = options.encryptionScheme ?? ENCRYPTION_SCHEME;
+  assertSupportedEnvelopeFormatVersion(formatVersion);
+  requireEncryptionSuite(encryptionScheme);
+
+  const onChain = await readOnChainProtocolVersion(suiClient, packageId);
+  if (onChain !== options.expectedProtocolVersion) {
+    throw new WriteCompatibilityError(
+      `Whisper write compatibility mismatch: deployed package ${packageId} reports protocol_version=${onChain}, but this SDK expects ${options.expectedProtocolVersion} for format_version=${formatVersion} and suite=${encryptionScheme}.`,
+    );
+  }
+  return onChain;
 }

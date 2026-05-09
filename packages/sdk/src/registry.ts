@@ -1,15 +1,24 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { normalizeAddress } from "./address.js";
+import { idFromUnknown, stringFromBytes } from "./envelope-codec.js";
 
 export interface RegistryEntry {
+  account: string;
+  encryptionScheme: string;
+  encryptionPubkey: Uint8Array;
+  currentKeyId: string;
+  keyVersion: number;
+  rotatedAtMs: number;
+}
+
+export interface EncryptionKeyRecord {
+  keyObjectId: string;
   account: string;
   encryptionScheme: string;
   encryptionPubkey: Uint8Array;
   keyVersion: number;
   rotatedAtMs: number;
 }
-
-const decoder = new TextDecoder();
 
 function fieldValue(content: unknown, key: string): unknown {
   if (
@@ -25,19 +34,36 @@ function fieldValue(content: unknown, key: string): unknown {
 }
 
 interface RawKeyEntryFields {
-  encryption_scheme?: number[];
+  encryption_scheme?: unknown;
   encryption_pubkey?: number[];
+  current_key_id?: unknown;
   key_version?: string;
   rotated_at_ms?: string;
 }
 
-function decodeKeyEntry(
-  account: string,
-  fields: RawKeyEntryFields,
-): RegistryEntry {
+interface RawEncryptionKeyFields extends RawKeyEntryFields {
+  account?: string;
+}
+
+function decodeKeyEntry(account: string, fields: RawKeyEntryFields): RegistryEntry {
   return {
     account: normalizeAddress(account),
-    encryptionScheme: decoder.decode(Uint8Array.from(fields.encryption_scheme ?? [])),
+    encryptionScheme: stringFromBytes(fields.encryption_scheme),
+    encryptionPubkey: Uint8Array.from(fields.encryption_pubkey ?? []),
+    currentKeyId: idFromUnknown(fields.current_key_id) ?? "",
+    keyVersion: Number(fields.key_version ?? 0),
+    rotatedAtMs: Number(fields.rotated_at_ms ?? 0),
+  };
+}
+
+function decodeEncryptionKeyRecord(
+  keyObjectId: string,
+  fields: RawEncryptionKeyFields,
+): EncryptionKeyRecord {
+  return {
+    keyObjectId,
+    account: normalizeAddress(String(fields.account ?? "")),
+    encryptionScheme: stringFromBytes(fields.encryption_scheme),
     encryptionPubkey: Uint8Array.from(fields.encryption_pubkey ?? []),
     keyVersion: Number(fields.key_version ?? 0),
     rotatedAtMs: Number(fields.rotated_at_ms ?? 0),
@@ -58,29 +84,13 @@ async function fetchRegistryTableId(suiClient: SuiClient, registryId: string): P
   return tableId;
 }
 
-/**
- * Fetch every registered key.
- *
- * Pages through `getDynamicFields` with the default page size, then
- * batch-loads each field object via `multiGetObjects`. There is no
- * 50-entry cap. For very large registries the page-by-page RPC cost
- * scales linearly with the registry size; if you only need one entry,
- * use `fetchRegistryEntry` instead — that's a single direct lookup.
- *
- * Entries are returned sorted by `rotatedAtMs` ascending.
- */
 export async function fetchRegistryEntries(
   suiClient: SuiClient,
   registryId: string,
 ): Promise<RegistryEntry[]> {
   const tableId = await fetchRegistryTableId(suiClient, registryId);
-
-  // Walk every page. The fullnode caps each page at QUERY_MAX_RESULT_LIMIT
-  // (~50 by default); we keep paging until hasNextPage is false.
   const fieldObjectIds: string[] = [];
-  let cursor: string | null | undefined = undefined;
-  // Hard upper bound to avoid an infinite loop if the fullnode misbehaves.
-  // 200 pages × 50/page = 10,000 entries; well past anything realistic.
+  let cursor: string | null | undefined;
   const MAX_PAGES = 200;
   for (let page = 0; page < MAX_PAGES; page++) {
     const res = await suiClient.getDynamicFields({
@@ -93,7 +103,6 @@ export async function fetchRegistryEntries(
   }
   if (fieldObjectIds.length === 0) return [];
 
-  // multiGetObjects has its own ~50-id cap per call — chunk to be safe.
   const CHUNK = 50;
   const entries: RegistryEntry[] = [];
   for (let i = 0; i < fieldObjectIds.length; i += CHUNK) {
@@ -117,16 +126,6 @@ export async function fetchRegistryEntries(
   return entries;
 }
 
-/**
- * Fetch a single account's registered key in one RPC round trip.
- *
- * Uses `getDynamicFieldObject` keyed directly on the address rather
- * than fetching the whole registry and filtering — so this is correct
- * regardless of how many entries the registry holds and is cheaper
- * than `fetchRegistryEntries` even at small N.
- *
- * Returns `null` if the account has not registered.
- */
 export async function fetchRegistryEntry(
   suiClient: SuiClient,
   registryId: string,
@@ -141,9 +140,6 @@ export async function fetchRegistryEntry(
       name: { type: "address", value: target },
     });
   } catch (e) {
-    // Sui fullnodes return an RPC error rather than `data: null` for
-    // missing dynamic fields. Catch the not-found case and translate
-    // to null; let any other error propagate.
     const msg = e instanceof Error ? e.message : String(e);
     if (
       msg.includes("dynamic field") ||
@@ -160,4 +156,17 @@ export async function fetchRegistryEntry(
     | undefined;
   if (!value?.fields) return null;
   return decodeKeyEntry(target, value.fields);
+}
+
+export async function fetchEncryptionKeyRecord(
+  suiClient: SuiClient,
+  keyObjectId: string,
+): Promise<EncryptionKeyRecord | null> {
+  const obj = await suiClient.getObject({
+    id: keyObjectId,
+    options: { showContent: true },
+  });
+  const fields = (obj.data?.content as { fields?: RawEncryptionKeyFields } | undefined)?.fields;
+  if (!fields) return null;
+  return decodeEncryptionKeyRecord(keyObjectId, fields);
 }

@@ -19,6 +19,31 @@
   margin-bottom: 0.75rem;
 }
 
+.app-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  flex-wrap: wrap;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+}
+
+.mode-toggle button {
+  border: 0;
+  border-right: 1px solid var(--border-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.15ch;
+  font-size: 0.75rem;
+  padding: 0.3rem 1ch;
+}
+
+.mode-toggle button:last-child {
+  border-right: 0;
+}
+
 .app-title {
   font-size: 1.1rem;
   letter-spacing: 0.5ch;
@@ -139,6 +164,20 @@
 
 .identity-status .identity-sep {
   color: var(--text-faint);
+}
+
+.dev-account-select {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--text-faint);
+  border-radius: 2px;
+  padding: 0 0.4ch;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dev-account-select:focus {
+  outline: 1px solid var(--brand);
 }
 
 .identity-action {

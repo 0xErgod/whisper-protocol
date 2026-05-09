@@ -1,6 +1,6 @@
 import { useState } from "react";
+import { normalizeAddress, shortAddress } from "@whisper-protocol/sdk";
 import { useAudit } from "../perspective/audit";
-import { labelForAddress, normalizeAddress, shortAddress } from "../crypto/identities";
 
 type IdKind =
   | "package"
@@ -14,8 +14,6 @@ type IdKind =
 interface Props {
   value: string;
   kind: IdKind;
-  // For "address" kind: also resolve to a known character label.
-  resolveLabel?: boolean;
   // Force showing the raw value regardless of audit mode.
   forceRaw?: boolean;
   className?: string;
@@ -35,11 +33,10 @@ function isHexish(value: string): boolean {
   return /^0x[0-9a-fA-F]+$/.test(value);
 }
 
-function friendly(value: string, kind: IdKind, resolveLabel: boolean): string {
+function friendly(value: string, kind: IdKind): string {
   if (!value) return "—";
   if (kind === "address") {
-    const addr = normalizeAddress(value);
-    return resolveLabel ? labelForAddress(addr) : shortAddress(addr);
+    return shortAddress(normalizeAddress(value));
   }
   if (isHexish(value)) {
     return shortAddress(value);
@@ -47,10 +44,10 @@ function friendly(value: string, kind: IdKind, resolveLabel: boolean): string {
   return value.length > 14 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
 }
 
-export function RawId({ value, kind, resolveLabel = false, forceRaw = false, className }: Props) {
+export function RawId({ value, kind, forceRaw = false, className }: Props) {
   const { rawIds } = useAudit();
   const [copied, setCopied] = useState(false);
-  const display = forceRaw || rawIds ? value : friendly(value, kind, resolveLabel);
+  const display = forceRaw || rawIds ? value : friendly(value, kind);
   const tooltip = `${KIND_LABEL[kind]}\n${value}\nclick to copy`;
   const onClick = async (e: React.MouseEvent) => {
     e.stopPropagation();

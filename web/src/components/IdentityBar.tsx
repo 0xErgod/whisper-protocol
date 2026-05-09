@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ConnectButton,
-  useCurrentAccount,
-  useSignAndExecuteTransaction,
 } from "@mysten/dapp-kit";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
@@ -13,17 +11,32 @@ import {
 } from "@whisper-protocol/sdk";
 import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
 import type { WhisperKeysState } from "../whisper/useWhisperKeys";
-import { whisper, suiClient, ACTIVE_CHAIN } from "../whisper/client";
+import { whisper, suiClient } from "../whisper/client";
+import type { ActiveAccount, DemoMode, TxExecutor } from "../whisper/session";
+import type { DevAccountSummary } from "../whisper/useDevSession";
 import { RawId } from "./RawId";
 
 interface Props {
   registry: RegistryEntry[];
   keysState: WhisperKeysState;
+  account: ActiveAccount | null;
+  mode: DemoMode;
+  txExecutor: TxExecutor | null;
+  devEnabled: boolean;
+  devAccounts: DevAccountSummary[];
+  onSelectDevAccount: (label: string) => void;
 }
 
-export function IdentityBar({ registry, keysState }: Props) {
-  const account = useCurrentAccount();
-  const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+export function IdentityBar({
+  registry,
+  keysState,
+  account,
+  mode,
+  txExecutor,
+  devEnabled,
+  devAccounts,
+  onSelectDevAccount,
+}: Props) {
   const [registering, setRegistering] = useState(false);
   const [regError, setRegError] = useState<string | null>(null);
   const [regSuccess, setRegSuccess] = useState<string | null>(null);
@@ -55,7 +68,8 @@ export function IdentityBar({ registry, keysState }: Props) {
     setRegSuccess(null);
     try {
       const tx = whisper.buildRegisterKeyTx(keys.encryptionPublicKey);
-      const result = await signAndExecute({ transaction: tx, chain: ACTIVE_CHAIN });
+      if (!txExecutor) throw new Error("no transaction signer available");
+      const result = await txExecutor(tx);
       const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
         digest: result.digest,
         options: { showEffects: true },
@@ -77,9 +91,37 @@ export function IdentityBar({ registry, keysState }: Props) {
   return (
     <div className="identity-bar">
       <div className="identity-cell">
-        <span className="identity-label">WALLET</span>
+        <span className="identity-label">MODE</span>
         <span className="identity-cell-value">
-          <ConnectButton connectText="connect wallet" />
+          {mode === "wallet" ? (
+            <ConnectButton connectText="connect wallet" />
+          ) : (
+            <span className="identity-status ok">
+              dev signer
+              {devAccounts.length > 1 ? (
+                <>
+                  <span className="identity-sep">·</span>
+                  <select
+                    className="dev-account-select"
+                    value={account?.label ?? ""}
+                    onChange={(e) => onSelectDevAccount(e.target.value)}
+                    aria-label="active dev account"
+                  >
+                    {devAccounts.map((a) => (
+                      <option key={a.label} value={a.label}>
+                        {a.label}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              ) : account?.label ? (
+                <>
+                  <span className="identity-sep">·</span>
+                  {account.label}
+                </>
+              ) : null}
+            </span>
+          )}
         </span>
       </div>
 
@@ -104,7 +146,11 @@ export function IdentityBar({ registry, keysState }: Props) {
           ) : keysState.keys ? (
             <span className="identity-status ok">
               derived
-              {keysState.hasCached === true && (
+              {mode === "dev" ? (
+                <>
+                  <span className="identity-sep">·</span>local
+                </>
+              ) : keysState.hasCached === true && (
                 <>
                   <span className="identity-sep">·</span>cached
                 </>
@@ -114,6 +160,8 @@ export function IdentityBar({ registry, keysState }: Props) {
             <span className="identity-status">
               <span className="spinner" /> awaiting wallet…
             </span>
+          ) : mode === "dev" ? (
+            <span className="identity-status error">missing dev signer</span>
           ) : keysState.hasCached === false ? (
             <button
               type="button"
@@ -180,6 +228,19 @@ export function IdentityBar({ registry, keysState }: Props) {
         </div>
       )}
 
+      {mode === "dev" && devEnabled && (
+        <div className="identity-toast">
+          <strong>DEV MODE</strong>
+          <span>·</span>
+          <span>transactions signed locally for</span>
+          {account ? (
+            <RawId value={account.address} kind="address" />
+          ) : (
+            <span style={{ color: "var(--text-faint)" }}>signer unavailable</span>
+          )}
+        </div>
+      )}
+
       {regSuccess && (
         <div className="identity-toast">
           <strong>REGISTERED</strong>
@@ -205,7 +266,7 @@ export function IdentityBar({ registry, keysState }: Props) {
                 : "personal-message"}
             </span>
           )}
-          <span className="identity-foot-scheme">scheme {ENCRYPTION_SCHEME}</span>
+          <span className="identity-foot-scheme">suite {ENCRYPTION_SCHEME}</span>
         </div>
       )}
     </div>

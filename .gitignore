@@ -1,5 +1,7 @@
 target/
 .env
+.env.local
+**/.env.local
 .sui/
 contracts/build/
 contracts/Move.lock
