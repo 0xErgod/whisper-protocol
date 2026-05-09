@@ -53,8 +53,8 @@ describe("multi-recipient encrypt/decrypt round-trip", () => {
       ephPubkey: payload.ephPubkey,
       payloadNonce: payload.payloadNonce,
       ciphertext: payload.ciphertext,
-      wrappedKey: payload.wrappedKeys[0],
-      wrapNonce: payload.wrapNonces[0],
+      wrappedKey: payload.wrappedKeys[0]!,
+      wrapNonce: payload.wrapNonces[0]!,
     });
     expect(bobPlain).toBe(PLAINTEXT);
 
@@ -66,8 +66,8 @@ describe("multi-recipient encrypt/decrypt round-trip", () => {
       ephPubkey: payload.ephPubkey,
       payloadNonce: payload.payloadNonce,
       ciphertext: payload.ciphertext,
-      wrappedKey: payload.wrappedKeys[1],
-      wrapNonce: payload.wrapNonces[1],
+      wrappedKey: payload.wrappedKeys[1]!,
+      wrapNonce: payload.wrapNonces[1]!,
     });
     expect(charliePlain).toBe(PLAINTEXT);
 
@@ -80,8 +80,8 @@ describe("multi-recipient encrypt/decrypt round-trip", () => {
         ephPubkey: payload.ephPubkey,
         payloadNonce: payload.payloadNonce,
         ciphertext: payload.ciphertext,
-        wrappedKey: payload.wrappedKeys[0],
-        wrapNonce: payload.wrapNonces[0],
+        wrappedKey: payload.wrappedKeys[0]!,
+        wrapNonce: payload.wrapNonces[0]!,
       }),
     ).toBeNull();
   });
@@ -108,8 +108,8 @@ describe("multi-recipient encrypt/decrypt round-trip", () => {
         ephPubkey: payload.ephPubkey,
         payloadNonce: payload.payloadNonce,
         ciphertext: payload.ciphertext,
-        wrappedKey: payload.wrappedKeys[1],
-        wrapNonce: payload.wrapNonces[1],
+        wrappedKey: payload.wrappedKeys[1]!,
+        wrapNonce: payload.wrapNonces[1]!,
       }),
     ).toBeNull();
   });
