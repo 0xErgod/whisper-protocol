@@ -1,7 +1,9 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { encryptForRecipient, tryDecrypt, tryDecryptUtf8 } from "./encrypt.js";
 import type { EncryptedPayload } from "./encrypt.js";
-import { buildPostEnvelopeTx, buildRegisterKeyTx } from "./tx.js";
+import { encryptForRecipients, tryDecryptMulti, tryDecryptMultiUtf8 } from "./encrypt-multi.js";
+import type { MultiEncryptedPayload } from "./encrypt-multi.js";
+import { buildPostEnvelopeTx, buildPostMultiEnvelopeTx, buildRegisterKeyTx } from "./tx.js";
 import {
   fetchEncryptionKeyRecord,
   fetchRegistryEntries,
@@ -15,10 +17,19 @@ import {
   fetchInbox,
 } from "./envelope.js";
 import type { OnChainEnvelope } from "./envelope.js";
+import {
+  fetchMultiEnvelope,
+  fetchMultiInbox,
+  recipientIndexInMultiEnvelope,
+} from "./multi-envelope.js";
+import type { OnChainMultiEnvelope } from "./multi-envelope.js";
 import { normalizeAddress } from "./address.js";
 import {
   CURRENT_ENVELOPE_FORMAT_VERSION,
+  CURRENT_MULTI_ENVELOPE_FORMAT_VERSION,
   ENCRYPTION_SCHEME,
+  ENCRYPTION_SCHEME_MULTI,
+  MAX_RECIPIENTS,
   SDK_PROTOCOL_VERSION,
 } from "./constants.js";
 import {
@@ -26,6 +37,10 @@ import {
   readOnChainProtocolVersion,
 } from "./protocol.js";
 import { requireEncryptionSuite, supportsEncryptionScheme } from "./suites.js";
+import {
+  requireMultiEncryptionSuite,
+  supportsMultiEncryptionScheme,
+} from "./suites-multi.js";
 
 export interface WhisperClientConfig {
   suiClient: SuiClient;
@@ -49,6 +64,22 @@ export interface PreparedSend {
   formatVersion: number;
   recipientKeyId: string;
   keyVersion: number;
+}
+
+export interface PrepareSendMultiArgs {
+  senderAddress: string;
+  recipientAddresses: string[];
+  plaintext: Uint8Array | string;
+  schema?: string;
+  context?: Uint8Array;
+}
+
+export interface PreparedMultiSend {
+  tx: ReturnType<typeof buildPostMultiEnvelopeTx>;
+  payload: MultiEncryptedPayload;
+  recipients: RegistryEntry[];
+  formatVersion: number;
+  encryptionScheme: string;
 }
 
 export interface RecipientKeyResolution {
@@ -254,8 +285,119 @@ export class WhisperClient {
     return bytes === null ? null : new TextDecoder().decode(bytes);
   }
 
+  // === Multi-recipient (format_version 3) ===
+
+  fetchMultiEnvelope(envelopeId: string): Promise<OnChainMultiEnvelope | null> {
+    return fetchMultiEnvelope(this.suiClient, envelopeId);
+  }
+
+  fetchMultiInbox(
+    ownerAddress: string,
+    options?: { limit?: number },
+  ): Promise<OnChainMultiEnvelope[]> {
+    return fetchMultiInbox(this.suiClient, this.packageId, ownerAddress, options);
+  }
+
+  async prepareSendMulti(args: PrepareSendMultiArgs): Promise<PreparedMultiSend> {
+    if (args.recipientAddresses.length === 0) {
+      throw new Error("prepareSendMulti requires at least one recipient");
+    }
+    if (args.recipientAddresses.length > MAX_RECIPIENTS) {
+      throw new Error(
+        `prepareSendMulti supports at most ${MAX_RECIPIENTS} recipients (got ${args.recipientAddresses.length})`,
+      );
+    }
+    // De-duplicate while preserving order so the on-chain
+    // duplicate-recipient guard never fires for innocent input.
+    const seen = new Set<string>();
+    const dedupedAddresses: string[] = [];
+    for (const a of args.recipientAddresses) {
+      const norm = normalizeAddress(a);
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      dedupedAddresses.push(a);
+    }
+    const recipients: RegistryEntry[] = [];
+    for (const addr of dedupedAddresses) {
+      const entry = await this.fetchRegistryEntry(addr);
+      if (!entry) {
+        throw new Error(
+          `Recipient ${normalizeAddress(addr)} has no registry entry. They must call register_encryption_key first.`,
+        );
+      }
+      if (!supportsMultiEncryptionScheme(ENCRYPTION_SCHEME_MULTI)) {
+        // Belt-and-suspenders: should be impossible since the suite is
+        // statically registered.
+        throw new Error(`SDK lacks support for multi-recipient suite ${ENCRYPTION_SCHEME_MULTI}`);
+      }
+      recipients.push(entry);
+    }
+    const payload = encryptForRecipients({
+      senderAddress: args.senderAddress,
+      recipients: recipients.map((r) => ({
+        address: r.account,
+        publicKey: r.encryptionPubkey,
+      })),
+      plaintext: args.plaintext,
+    });
+    const tx = buildPostMultiEnvelopeTx({
+      packageId: this.packageId,
+      registryId: this.registryId,
+      recipients: recipients.map((r) => ({
+        address: r.account,
+        keyId: r.currentKeyId,
+        keyVersion: r.keyVersion,
+      })),
+      schema: args.schema,
+      context: args.context,
+      formatVersion: CURRENT_MULTI_ENVELOPE_FORMAT_VERSION,
+      payload,
+    });
+    return {
+      tx,
+      payload,
+      recipients,
+      formatVersion: CURRENT_MULTI_ENVELOPE_FORMAT_VERSION,
+      encryptionScheme: payload.encryptionScheme,
+    };
+  }
+
+  decryptMultiEnvelope(input: {
+    envelope: OnChainMultiEnvelope;
+    recipientAddress: string;
+    recipientPrivateKey: Uint8Array;
+  }): Uint8Array | null {
+    const idx = recipientIndexInMultiEnvelope(input.envelope, input.recipientAddress);
+    if (idx < 0) return null;
+    const wrappedKey = input.envelope.wrappedKeys[idx];
+    const wrapNonce = input.envelope.wrapNonces[idx];
+    if (!wrappedKey || !wrapNonce) return null;
+    const suite = requireMultiEncryptionSuite(input.envelope.encryptionScheme);
+    return suite.decrypt({
+      encryptionScheme: input.envelope.encryptionScheme,
+      senderAddress: input.envelope.sender,
+      recipientAddress: input.recipientAddress,
+      recipientPrivateKey: input.recipientPrivateKey,
+      ephPubkey: input.envelope.ephPubkey,
+      payloadNonce: input.envelope.payloadNonce,
+      ciphertext: input.envelope.ciphertext,
+      wrappedKey,
+      wrapNonce,
+    });
+  }
+
+  decryptMultiEnvelopeUtf8(
+    input: Parameters<WhisperClient["decryptMultiEnvelope"]>[0],
+  ): string | null {
+    const bytes = this.decryptMultiEnvelope(input);
+    return bytes === null ? null : new TextDecoder().decode(bytes);
+  }
+
   static encrypt = encryptForRecipient;
   static tryDecrypt = tryDecrypt;
   static tryDecryptUtf8 = tryDecryptUtf8;
+  static encryptForRecipients = encryptForRecipients;
+  static tryDecryptMulti = tryDecryptMulti;
+  static tryDecryptMultiUtf8 = tryDecryptMultiUtf8;
   static readOnChainProtocolVersion = readOnChainProtocolVersion;
 }

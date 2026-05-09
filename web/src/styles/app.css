@@ -602,6 +602,72 @@
   color: var(--ok);
 }
 
+.recipient-input-row {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5ch;
+  align-items: center;
+  min-width: 30ch;
+  border: 1px solid var(--brand-dim);
+  background: var(--bg-elevated);
+  padding: 0.3rem 0.5ch;
+}
+
+.recipient-input-row input {
+  border: 0 !important;
+  background: transparent;
+  padding: 0;
+  flex: 1;
+  min-width: 18ch;
+}
+
+.recipient-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5ch;
+  padding: 0.1rem 0.6ch;
+  border: 1px solid var(--brand-dim);
+  background: rgba(255, 165, 0, 0.07);
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.recipient-chip-error {
+  border-color: var(--bad);
+  background: rgba(255, 85, 85, 0.06);
+}
+
+.recipient-chip-meta {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+
+.recipient-chip-remove {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-faint) !important;
+  padding: 0 0.2ch !important;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.recipient-chip-remove:hover:not(:disabled) {
+  color: var(--bad) !important;
+}
+
+.recipient-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3ch;
+  align-items: baseline;
+}
+
+.recipient-list-you {
+  color: var(--ok);
+}
+
 .spinner {
   display: inline-block;
   width: 1ch;

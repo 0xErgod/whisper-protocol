@@ -7,10 +7,14 @@ import {
   decodeEnvelopeCompatibilityMetadata,
   detectEnvelopeFormatVersion,
   idFromUnknown,
+  isSingleRecipientEnvelopeFormatVersion,
   stringFromBytes,
   type EnvelopeCompatibilityMetadata,
 } from "./envelope-codec.js";
-import { UnsupportedEncryptionSchemeError } from "./errors.js";
+import {
+  UnsupportedEncryptionSchemeError,
+  UnsupportedEnvelopeFormatVersionError,
+} from "./errors.js";
 import { supportsEncryptionScheme } from "./suites.js";
 
 export interface OnChainEnvelope extends EnvelopeCompatibilityMetadata {
@@ -73,6 +77,11 @@ export function decodeEnvelopeFields(
 ): OnChainEnvelope {
   const formatVersion = detectEnvelopeFormatVersion(fields);
   assertSupportedEnvelopeFormatVersion(formatVersion);
+  if (!isSingleRecipientEnvelopeFormatVersion(formatVersion)) {
+    // Multi-recipient envelopes (v3) must be decoded via decodeMultiEnvelopeFields;
+    // failing closed here protects callers from getting a half-decoded envelope.
+    throw new UnsupportedEnvelopeFormatVersionError(formatVersion);
+  }
   return formatVersion === LEGACY_ENVELOPE_FORMAT_VERSION
     ? decodeV1Envelope(envelopeId, fields)
     : decodeV2Envelope(envelopeId, fields);
