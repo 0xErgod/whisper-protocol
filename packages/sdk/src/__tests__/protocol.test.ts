@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CURRENT_ENVELOPE_FORMAT_VERSION,
-  ENCRYPTION_SCHEME,
+  ENCRYPTION_SCHEME_UNIFIED,
   SDK_PROTOCOL_VERSION,
 } from "../constants.js";
 import {
@@ -31,7 +31,7 @@ describe("assertWriteCompatible", () => {
       assertWriteCompatible(client as never, "0xpackage", {
         expectedProtocolVersion: SDK_PROTOCOL_VERSION,
         formatVersion: CURRENT_ENVELOPE_FORMAT_VERSION,
-        encryptionScheme: ENCRYPTION_SCHEME,
+        encryptionScheme: ENCRYPTION_SCHEME_UNIFIED,
       }),
     ).resolves.toBe(SDK_PROTOCOL_VERSION);
   });
@@ -42,7 +42,7 @@ describe("assertWriteCompatible", () => {
       assertWriteCompatible(client as never, "0xpackage", {
         expectedProtocolVersion: SDK_PROTOCOL_VERSION,
         formatVersion: CURRENT_ENVELOPE_FORMAT_VERSION,
-        encryptionScheme: ENCRYPTION_SCHEME,
+        encryptionScheme: ENCRYPTION_SCHEME_UNIFIED,
       }),
     ).rejects.toThrowError(WriteCompatibilityError);
   });
