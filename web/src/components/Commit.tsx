@@ -4,6 +4,8 @@ import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   COMMITMENT_DOMAIN_V1,
   HASH_SCHEME_BLAKE2B_256,
+  HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1,
+  MAX_POSEIDON_SECRET_BYTES,
   MODULE_COMMITMENTS,
   MODULE_ENVELOPES,
   SCHEMA_COMMITMENT_OPENING_V1,
@@ -68,10 +70,15 @@ const DEFAULT_SCHEMA = "asset_location_v1";
 
 export function Commit({ account, mode, txExecutor, registry }: Props) {
   const [schema, setSchema] = useState(DEFAULT_SCHEMA);
+  const [hashScheme, setHashScheme] = useState<string>(HASH_SCHEME_BLAKE2B_256);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<CommitReceipt | null>(null);
+
+  const isPoseidon = hashScheme === HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1;
+  const textByteLen = useMemo(() => new TextEncoder().encode(text).length, [text]);
+  const tooLongForPoseidon = isPoseidon && textByteLen > MAX_POSEIDON_SECRET_BYTES;
 
   const ownEntry = useMemo<RegistryEntry | null>(() => {
     if (!account) return null;
@@ -138,6 +145,7 @@ export function Commit({ account, mode, txExecutor, registry }: Props) {
         authorAddress: account.address,
         authorRegistryEntry: ownEntry,
         schema,
+        hashScheme,
         plaintextSecret: text,
       });
       const result = await txExecutor(prepared.tx);
@@ -154,11 +162,11 @@ export function Commit({ account, mode, txExecutor, registry }: Props) {
       }
 
       // The PTB creates two objects in the same tx: a SecretCommitment
-      // and an EncryptedEnvelope (the self-addressed opening).
+      // and a v5 Envelope (the self-addressed opening).
       let commitmentObjectId: string | null = null;
       let openingEnvelopeId: string | null = null;
       const commitmentType = `${PACKAGE_ID}::${MODULE_COMMITMENTS}::SecretCommitment`;
-      const envelopeType = `${PACKAGE_ID}::${MODULE_ENVELOPES}::EncryptedEnvelope`;
+      const envelopeType = `${PACKAGE_ID}::${MODULE_ENVELOPES}::Envelope`;
       for (const change of full.objectChanges ?? []) {
         if (change.type !== "created") continue;
         if (change.objectType === commitmentType) commitmentObjectId = change.objectId;
@@ -171,7 +179,7 @@ export function Commit({ account, mode, txExecutor, registry }: Props) {
         openingEnvelopeId,
         schema,
         openingSchema: prepared.openingSchema,
-        hashScheme: HASH_SCHEME_BLAKE2B_256,
+        hashScheme,
         commitmentHex: bytesToHex(prepared.commitment),
         saltHex: bytesToHex(prepared.salt),
         plaintextBytes: prepared.encodedSecret.length,
@@ -209,6 +217,20 @@ export function Commit({ account, mode, txExecutor, registry }: Props) {
             spellCheck={false}
             style={{ minWidth: "30ch" }}
           />
+          <label htmlFor="commit-hash">hash</label>
+          <select
+            id="commit-hash"
+            value={hashScheme}
+            onChange={(e) => setHashScheme(e.target.value)}
+            disabled={busy}
+          >
+            <option value={HASH_SCHEME_BLAKE2B_256}>
+              blake2b-256 (fast, native)
+            </option>
+            <option value={HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1}>
+              poseidon-bn254-circomlib-v1 (ZK-friendly)
+            </option>
+          </select>
           <label htmlFor="commit-text" className="sr-only">
             secret
           </label>
@@ -221,7 +243,10 @@ export function Commit({ account, mode, txExecutor, registry }: Props) {
             disabled={busy}
             maxLength={500}
           />
-          <button type="submit" disabled={busy || !text.trim() || !schema.trim()}>
+          <button
+            type="submit"
+            disabled={busy || !text.trim() || !schema.trim() || tooLongForPoseidon}
+          >
             {busy ? "committing…" : "commit"}
           </button>
 
@@ -233,10 +258,16 @@ export function Commit({ account, mode, txExecutor, registry }: Props) {
                 but inside an encrypted envelope addressed to <strong>you</strong>. one PTB, both
                 land or neither.
               </>
+            ) : tooLongForPoseidon ? (
+              <span className="compose-status error">
+                Poseidon commitments are capped at {MAX_POSEIDON_SECRET_BYTES} bytes; this
+                plaintext is {textByteLen} bytes. Shorten it or switch to blake2b-256.
+              </span>
             ) : (
               <>
-                domain <code>{COMMITMENT_DOMAIN_V1}</code> · hash <code>{HASH_SCHEME_BLAKE2B_256}</code>{" "}
-                · opening schema <code>{SCHEMA_COMMITMENT_OPENING_V1}</code>
+                domain <code>{COMMITMENT_DOMAIN_V1}</code> · hash <code>{hashScheme}</code>
+                {isPoseidon && <> · {textByteLen} / {MAX_POSEIDON_SECRET_BYTES} bytes</>} ·
+                opening schema <code>{SCHEMA_COMMITMENT_OPENING_V1}</code>
               </>
             )}
           </div>

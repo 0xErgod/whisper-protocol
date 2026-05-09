@@ -255,6 +255,7 @@ function CommittedRow({
       myAddress,
       keys.encryptionPrivateKey,
       ev.commitment,
+      ev.hashScheme,
     )
       .then((found) => {
         if (cancelled) return;
@@ -387,8 +388,8 @@ function OpenedRow({
 }) {
   const isMine = !!myAddress && myAddress === ev.author;
   const verified = useMemo(
-    () => verifyOpening(ev.encodedSecret, ev.salt, ev.commitment),
-    [ev.encodedSecret, ev.salt, ev.commitment],
+    () => verifyOpening(ev.encodedSecret, ev.salt, ev.commitment, ev.hashScheme),
+    [ev.encodedSecret, ev.salt, ev.commitment, ev.hashScheme],
   );
   const plaintext = useMemo(() => new TextDecoder().decode(ev.encodedSecret), [ev.encodedSecret]);
 

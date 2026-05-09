@@ -8,6 +8,7 @@ import {
   ENCRYPTION_SCHEME,
   ENCRYPTION_SCHEME_UNIFIED,
   HASH_SCHEME_BLAKE2B_256,
+  HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1,
   SCHEMA_COMMITMENT_OPENING_V1,
 } from "../constants.js";
 import {
@@ -21,6 +22,8 @@ import {
   prepareCommitWithSelfOpening,
   verifyOpening,
 } from "../commitments.js";
+import { UnsupportedHashSchemeError } from "../errors.js";
+import { _poseidonInternals, MAX_POSEIDON_SECRET_BYTES, poseidonCommitmentHash } from "../hash-poseidon.js";
 import { encryptForRecipientsV5 } from "../encrypt-unified.js";
 import type { RegistryEntry } from "../registry.js";
 
@@ -112,6 +115,119 @@ describe("createCommitment + verifyOpening round-trip", () => {
     const b = createCommitment(secret);
     expect(a.salt).not.toEqual(b.salt);
     expect(a.commitment).not.toEqual(b.commitment);
+  });
+});
+
+describe("Poseidon-BN254 commitment hash (ZK-friendly)", () => {
+  it("produces a deterministic 32-byte digest", () => {
+    const secret = encodeTextSecret("attack=north");
+    const salt = new Uint8Array(32).fill(0xff);
+    const a = poseidonCommitmentHash(secret, salt);
+    const b = poseidonCommitmentHash(secret, salt);
+    expect(a).toEqual(b);
+    expect(a.length).toBe(32);
+  });
+
+  it("matches the cross-language compatibility fixture (Rust prover MUST match this)", () => {
+    // This fixture is the contract with the future arkworks-rs Rust
+    // verifier. Any implementation that produces a different hash
+    // for these exact inputs is using different Poseidon parameters,
+    // a different chunking scheme, or a different field reduction,
+    // and is incompatible with this SDK.
+    //
+    // See specs/poseidon-commitment-format.md for the full spec and
+    // the inputs that produced this fixture.
+    const secret = encodeTextSecret("attack=north");
+    const salt = new Uint8Array(32).fill(0xff);
+    const commitment = poseidonCommitmentHash(secret, salt);
+    expect(bytesToHex(commitment)).toBe(
+      "05f259557771fff79607b4e879588ab25c357c2da69acac697da93d9af2d1eb7",
+    );
+    // Domain tag derivation is also part of the contract.
+    expect(_poseidonInternals.domainFieldHex()).toBe(
+      "15acf9be01a30fd2b8298af5cab2f90c84e8fb388ae253ebb8911cf98f421306",
+    );
+  });
+
+  it("changes when secret changes", () => {
+    const salt = new Uint8Array(32).fill(0xff);
+    const a = poseidonCommitmentHash(encodeTextSecret("attack=north"), salt);
+    const b = poseidonCommitmentHash(encodeTextSecret("attack=south"), salt);
+    expect(a).not.toEqual(b);
+  });
+
+  it("changes when salt changes", () => {
+    const secret = encodeTextSecret("attack=north");
+    const a = poseidonCommitmentHash(secret, new Uint8Array(32).fill(0xff));
+    const b = poseidonCommitmentHash(secret, new Uint8Array(32).fill(0xfe));
+    expect(a).not.toEqual(b);
+  });
+
+  it("rejects oversized secrets (cap is MAX_POSEIDON_SECRET_BYTES)", () => {
+    const tooBig = new Uint8Array(MAX_POSEIDON_SECRET_BYTES + 1);
+    const salt = new Uint8Array(32);
+    expect(() => poseidonCommitmentHash(tooBig, salt)).toThrowError(/at most/);
+  });
+
+  it("rejects salts of the wrong length (must be 32 bytes)", () => {
+    const secret = encodeTextSecret("x");
+    expect(() => poseidonCommitmentHash(secret, new Uint8Array(31))).toThrowError(
+      /must be 32 bytes/,
+    );
+    expect(() => poseidonCommitmentHash(secret, new Uint8Array(33))).toThrowError(
+      /must be 32 bytes/,
+    );
+  });
+});
+
+describe("hash scheme dispatch", () => {
+  it("commitmentHash defaults to Blake2b for back-compat", () => {
+    const secret = encodeTextSecret("x");
+    const salt = new Uint8Array(32).fill(7);
+    const defaulted = commitmentHash(secret, salt);
+    const explicit = commitmentHash(secret, salt, HASH_SCHEME_BLAKE2B_256);
+    expect(defaulted).toEqual(explicit);
+  });
+
+  it("commitmentHash routes Poseidon and Blake2b to different outputs for the same inputs", () => {
+    const secret = encodeTextSecret("attack=north");
+    const salt = new Uint8Array(32).fill(0xff);
+    const blake = commitmentHash(secret, salt, HASH_SCHEME_BLAKE2B_256);
+    const poseidon = commitmentHash(secret, salt, HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1);
+    expect(blake).not.toEqual(poseidon);
+  });
+
+  it("commitmentHash throws UnsupportedHashSchemeError on unknown schemes", () => {
+    expect(() =>
+      commitmentHash(new Uint8Array(0), new Uint8Array(32), "fnv-mvp-v1"),
+    ).toThrowError(UnsupportedHashSchemeError);
+  });
+
+  it("verifyOpening fails closed when given the wrong hash scheme", () => {
+    // A Poseidon commitment verified under Blake2b must fail.
+    const secret = encodeTextSecret("attack=north");
+    const { commitment, salt } = createCommitment(secret, HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1);
+    expect(verifyOpening(secret, salt, commitment, HASH_SCHEME_BLAKE2B_256)).toBe(false);
+    expect(verifyOpening(secret, salt, commitment, HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1)).toBe(true);
+  });
+
+  it("verifyOpening returns false (not throws) for unknown scheme strings", () => {
+    const secret = encodeTextSecret("x");
+    const salt = new Uint8Array(32);
+    const commitment = new Uint8Array(32);
+    expect(verifyOpening(secret, salt, commitment, "made-up-scheme-v1")).toBe(false);
+  });
+
+  it("createCommitment + verifyOpening round-trip works for Poseidon", () => {
+    const secret = encodeTextSecret("asset_id=fortress;x=42;y=9");
+    const { commitment, salt, hashScheme } = createCommitment(
+      secret,
+      HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1,
+    );
+    expect(hashScheme).toBe(HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1);
+    expect(salt.length).toBe(32);
+    expect(commitment.length).toBe(32);
+    expect(verifyOpening(secret, salt, commitment, hashScheme)).toBe(true);
   });
 });
 

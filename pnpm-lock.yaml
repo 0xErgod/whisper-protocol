@@ -45,6 +45,9 @@ importers:
       '@noble/hashes':
         specifier: ^1.5.0
         version: 1.8.0
+      poseidon-lite:
+        specifier: ^0.3.0
+        version: 0.3.0
     devDependencies:
       rimraf:
         specifier: ^6.0.1
@@ -3720,6 +3723,10 @@ packages:
 
   /poseidon-lite@0.2.1:
     resolution: {integrity: sha512-xIr+G6HeYfOhCuswdqcFpSX47SPhm0EpisWJ6h7fHlWwaVIvH3dLnejpatrtw6Xc6HaLrpq05y7VRfvDmDGIog==}
+    dev: false
+
+  /poseidon-lite@0.3.0:
+    resolution: {integrity: sha512-ilJj4MIve4uBEG7SrtPqUUNkvpJ/pLVbndxa0WvebcQqeIhe+h72JR4g0EvwchUzm9sOQDlOjiDNmRAgxNZl4A==}
     dev: false
 
   /postcss@8.5.13:
