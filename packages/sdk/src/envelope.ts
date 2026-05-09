@@ -1,11 +1,23 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { normalizeAddress } from "./address.js";
-import { MODULE } from "./constants.js";
+import { LEGACY_ENVELOPE_FORMAT_VERSION, MODULE } from "./constants.js";
+import {
+  assertSupportedEnvelopeFormatVersion,
+  bytesFromArray,
+  decodeEnvelopeCompatibilityMetadata,
+  detectEnvelopeFormatVersion,
+  idFromUnknown,
+  stringFromBytes,
+  type EnvelopeCompatibilityMetadata,
+} from "./envelope-codec.js";
+import { UnsupportedEncryptionSchemeError } from "./errors.js";
+import { supportsEncryptionScheme } from "./suites.js";
 
-export interface OnChainEnvelope {
+export interface OnChainEnvelope extends EnvelopeCompatibilityMetadata {
   envelopeId: string;
   sender: string;
   recipient: string;
+  recipientKeyId: string | null;
   context: Uint8Array;
   schema: string;
   keyVersion: number;
@@ -15,24 +27,75 @@ export interface OnChainEnvelope {
   createdAtMs: number;
 }
 
-const decoder = new TextDecoder();
+function decodeV1Envelope(
+  envelopeId: string,
+  fields: Record<string, unknown>,
+): OnChainEnvelope {
+  return {
+    envelopeId,
+    ...decodeEnvelopeCompatibilityMetadata(fields),
+    sender: normalizeAddress(String(fields.sender ?? "")),
+    recipient: normalizeAddress(String(fields.recipient ?? "")),
+    recipientKeyId: null,
+    context: bytesFromArray(fields.context),
+    schema: stringFromBytes(fields.schema),
+    keyVersion: Number(fields.key_version ?? 0),
+    ephPubkey: bytesFromArray(fields.eph_pubkey),
+    nonce: bytesFromArray(fields.nonce),
+    ciphertext: bytesFromArray(fields.ciphertext),
+    createdAtMs: Number(fields.created_at_ms ?? 0),
+  };
+}
 
-function bytesFromArray(input: unknown): Uint8Array {
-  if (input instanceof Uint8Array) return input;
-  if (Array.isArray(input)) return Uint8Array.from(input as number[]);
-  if (typeof input === "string") {
-    if (input.startsWith("0x")) {
-      const hex = input.slice(2);
-      const out = new Uint8Array(hex.length / 2);
-      for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-      return out;
-    }
-    const bin = atob(input);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
+function decodeV2Envelope(
+  envelopeId: string,
+  fields: Record<string, unknown>,
+): OnChainEnvelope {
+  return {
+    envelopeId,
+    ...decodeEnvelopeCompatibilityMetadata(fields),
+    sender: normalizeAddress(String(fields.sender ?? "")),
+    recipient: normalizeAddress(String(fields.recipient ?? "")),
+    recipientKeyId: idFromUnknown(fields.recipient_key_id),
+    context: bytesFromArray(fields.context),
+    schema: stringFromBytes(fields.schema),
+    keyVersion: Number(fields.key_version ?? 0),
+    ephPubkey: bytesFromArray(fields.eph_pubkey),
+    nonce: bytesFromArray(fields.nonce),
+    ciphertext: bytesFromArray(fields.ciphertext),
+    createdAtMs: Number(fields.created_at_ms ?? 0),
+  };
+}
+
+export function decodeEnvelopeFields(
+  envelopeId: string,
+  fields: Record<string, unknown>,
+): OnChainEnvelope {
+  const formatVersion = detectEnvelopeFormatVersion(fields);
+  assertSupportedEnvelopeFormatVersion(formatVersion);
+  return formatVersion === LEGACY_ENVELOPE_FORMAT_VERSION
+    ? decodeV1Envelope(envelopeId, fields)
+    : decodeV2Envelope(envelopeId, fields);
+}
+
+export function canReadEnvelope(
+  envelope: Pick<OnChainEnvelope, "formatVersion" | "encryptionScheme">,
+): boolean {
+  try {
+    assertCanReadEnvelope(envelope);
+    return true;
+  } catch {
+    return false;
   }
-  return new Uint8Array();
+}
+
+export function assertCanReadEnvelope(
+  envelope: Pick<OnChainEnvelope, "formatVersion" | "encryptionScheme">,
+): void {
+  assertSupportedEnvelopeFormatVersion(envelope.formatVersion);
+  if (!supportsEncryptionScheme(envelope.encryptionScheme)) {
+    throw new UnsupportedEncryptionSchemeError(envelope.encryptionScheme);
+  }
 }
 
 export async function fetchEnvelope(
@@ -46,18 +109,7 @@ export async function fetchEnvelope(
   if (!obj.data?.content) return null;
   const f = (obj.data.content as { fields?: Record<string, unknown> }).fields;
   if (!f) return null;
-  return {
-    envelopeId,
-    sender: normalizeAddress(String(f.sender ?? "")),
-    recipient: normalizeAddress(String(f.recipient ?? "")),
-    context: bytesFromArray(f.context),
-    schema: decoder.decode(bytesFromArray(f.schema)),
-    keyVersion: Number(f.key_version ?? 0),
-    ephPubkey: bytesFromArray(f.eph_pubkey),
-    nonce: bytesFromArray(f.nonce),
-    ciphertext: bytesFromArray(f.ciphertext),
-    createdAtMs: Number(f.created_at_ms ?? 0),
-  };
+  return decodeEnvelopeFields(envelopeId, f);
 }
 
 export async function fetchInbox(
@@ -77,21 +129,8 @@ export async function fetchInbox(
     if (!id) continue;
     const f = (entry.data?.content as { fields?: Record<string, unknown> } | undefined)?.fields;
     if (!f) continue;
-    out.push({
-      envelopeId: id,
-      sender: normalizeAddress(String(f.sender ?? "")),
-      recipient: normalizeAddress(String(f.recipient ?? "")),
-      context: bytesFromArray(f.context),
-      schema: decoder.decode(bytesFromArray(f.schema)),
-      keyVersion: Number(f.key_version ?? 0),
-      ephPubkey: bytesFromArray(f.eph_pubkey),
-      nonce: bytesFromArray(f.nonce),
-      ciphertext: bytesFromArray(f.ciphertext),
-      createdAtMs: Number(f.created_at_ms ?? 0),
-    });
+    out.push(decodeEnvelopeFields(id, f));
   }
   out.sort((a, b) => b.createdAtMs - a.createdAtMs);
   return out;
 }
-
-export { bytesFromArray };

@@ -1,4 +1,5 @@
 import type { DerivedEncryptionKeypair } from "./derive.js";
+import { bytesToHex, normalizeAddress } from "./utils.js";
 
 /**
  * IndexedDB-backed cache of derived encryption keypairs.
@@ -27,10 +28,6 @@ interface CacheRecord {
   derivedAtMs: number;
 }
 
-function bytesToHex(b: Uint8Array): string {
-  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-}
-
 export interface CacheKeyInput {
   address: string;
   version: number;
@@ -40,7 +37,7 @@ export interface CacheKeyInput {
 
 export function makeCacheKey(input: CacheKeyInput): string {
   return [
-    input.address.toLowerCase(),
+    normalizeAddress(input.address),
     input.scope,
     String(input.version),
     bytesToHex(input.canonicalMessageDigest),

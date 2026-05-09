@@ -13,6 +13,7 @@ import {
   ROOT_SCOPE,
   WHISPER_PROTOCOL_NAME,
 } from "./constants.js";
+import { normalizeAddress } from "./utils.js";
 
 export interface CanonicalMessageInput {
   /** Sui address of the wallet. Lowercased and `0x`-prefixed inside. */
@@ -29,12 +30,6 @@ export interface CanonicalMessageInput {
   scope?: string;
   /** Defaults to "encryption-keypair". */
   purpose?: string;
-}
-
-function normalizeAddress(addr: string): string {
-  if (!addr) return addr;
-  const lower = addr.toLowerCase();
-  return lower.startsWith("0x") ? lower : `0x${lower}`;
 }
 
 export function canonicalMessage(input: CanonicalMessageInput): string {
