@@ -28,6 +28,12 @@ The `predev` / `prebuild` scripts run `wasm-pack` first, regenerating
 So a fresh checkout just needs `pnpm install` once and then the command above —
 the WASM is built on demand.
 
+The `wasm` script uses `--release`, not `--dev`. arkworks generates functions
+whose local-count exceeds the wasm spec's 50,000-per-function limit in debug
+builds; the release profile inlines them below the limit. Same constraint
+documented in `crates/crypto-wasm/tests/boundary.rs`. Build time is ~30s once,
+cached after.
+
 Requires the `wasm32-unknown-unknown` Rust target and `wasm-pack` on PATH:
 
 ```sh
