@@ -12,7 +12,7 @@
 
 import { keypair_from_seed } from "crypto-wasm";
 
-import { drawAnchor, drawGrid, shortCoord, toPixel } from "./render";
+import { drawAnchor, drawGrid, palette, shortCoord, toPixel } from "./render";
 
 /**
  * Generate a cryptographically random 64-byte seed via the browser's
@@ -90,7 +90,7 @@ export function setupKeypairPanel(els: KeypairPanelElements): void {
     ctx.clearRect(0, 0, W, H);
     drawGrid(ctx, W, H);
     const { px, py } = toPixel(pkX, pkY, W, H);
-    drawAnchor(ctx, px, py, "#f59e0b", "PK");
+    drawAnchor(ctx, px, py, palette.brand, "PK");
 
     els.readout.innerHTML = `
       <div class="row"><span class="label">seed</span> <code>${seedHex(currentSeed)}</code></div>

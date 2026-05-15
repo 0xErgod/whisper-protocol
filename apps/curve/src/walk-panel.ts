@@ -9,7 +9,7 @@
 
 import { generator, mul_generator } from "crypto-wasm";
 
-import { drawGrid, project } from "./render";
+import { drawGrid, palette, project } from "./render";
 
 interface WalkPoint {
   k: number;
@@ -50,7 +50,11 @@ export function setupWalkPanel(els: WalkPanelElements): void {
     ctx.clearRect(0, 0, W, H);
     drawGrid(ctx, W, H);
 
-    ctx.strokeStyle = "rgba(110, 231, 183, 0.35)";
+    // Connecting path — the walk itself, drawn faint with globalAlpha
+    // so the per-point dots read on top.
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = palette.brand;
     ctx.lineWidth = 1;
     ctx.beginPath();
     walk.forEach((p, i) => {
@@ -58,19 +62,25 @@ export function setupWalkPanel(els: WalkPanelElements): void {
       else ctx.lineTo(p.px, p.py);
     });
     ctx.stroke();
+    ctx.restore();
 
+    // Per-point dots, brightening (via globalAlpha) toward the most
+    // recent multiple so the direction of travel reads.
     walk.forEach((p, i) => {
       const t = i / Math.max(1, walk.length - 1);
       const r = 2 + t * 2;
-      ctx.fillStyle = `rgba(110, 231, 183, ${0.3 + t * 0.7})`;
+      ctx.save();
+      ctx.globalAlpha = 0.3 + t * 0.7;
+      ctx.fillStyle = palette.brand;
       ctx.beginPath();
       ctx.arc(p.px, p.py, r, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
     });
 
     // Mark `1·G` distinctly — the anchor of the whole walk.
     const g = walk[0];
-    ctx.strokeStyle = "#e6e7ea";
+    ctx.strokeStyle = palette.text;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(g.px, g.py, 6, 0, Math.PI * 2);

@@ -4,7 +4,33 @@
  * No curve math lives here — only field-element-to-pixel projection and
  * canvas drawing helpers used by every panel. The curve math is in
  * `crypto-wasm`, behind the WASM boundary.
+ *
+ * Canvas colors come from the same CSS custom properties as the rest of
+ * the app: a theme change in `styles/tokens.css` carries through. We read
+ * them once at module load — the protocol's design language is static, so
+ * re-reading on every frame would just be waste.
  */
+
+/**
+ * Resolve a CSS custom property value from the document root. Used to
+ * pull design tokens into canvas drawing without hardcoding hex literals.
+ */
+function token(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/** Canvas palette — one source of truth, named by role. */
+export const palette = {
+  grid: token("--gray-15"),
+  text: token("--text"),
+  brand: token("--brand"),
+  // Distinct accents for the three "actors" in the ECDH and keypair views.
+  // Kept as direct values from the token scheme rather than per-actor
+  // tokens — the canvas is the only consumer.
+  actorA: token("--bright-orange"),
+  actorB: token("--bright-magenta"),
+  shared: token("--bright-green"),
+};
 
 /**
  * The Baby Jubjub base field prime, from `specs/babyjub-curve.md`. Point
@@ -48,7 +74,7 @@ export function drawGrid(
   width: number,
   height: number,
 ): void {
-  ctx.strokeStyle = "#15171e";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1;
   for (let i = 1; i < 8; i++) {
     const gx = (i / 8) * width;
@@ -81,8 +107,8 @@ export function drawAnchor(
   ctx.arc(px, py, 9, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.fillStyle = "#e6e7ea";
-  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillStyle = palette.text;
+  ctx.font = '11px "Geist Mono", ui-monospace, monospace';
   ctx.fillText(label, px + 12, py - 8);
 }
 

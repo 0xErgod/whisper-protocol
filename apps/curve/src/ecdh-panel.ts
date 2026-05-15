@@ -12,7 +12,7 @@
 
 import { ecdh, keypair_from_seed } from "crypto-wasm";
 
-import { drawAnchor, drawGrid, shortCoord, toPixel } from "./render";
+import { drawAnchor, drawGrid, palette, shortCoord, toPixel } from "./render";
 
 function randomSeed(): Uint8Array {
   const buf = new Uint8Array(64);
@@ -63,8 +63,11 @@ export function setupEcdhPanel(els: EcdhPanelElements): void {
     const s = toPixel(sharedAB.x, sharedAB.y, W, H);
 
     // Faint lines from each party's PK to the shared point — visually
-    // suggests "both parties walk to the same place."
-    ctx.strokeStyle = "rgba(110, 231, 183, 0.25)";
+    // suggests "both parties walk to the same place." The line color
+    // matches the shared point but with reduced opacity via globalAlpha.
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = palette.shared;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(a.px, a.py);
@@ -72,10 +75,11 @@ export function setupEcdhPanel(els: EcdhPanelElements): void {
     ctx.moveTo(b.px, b.py);
     ctx.lineTo(s.px, s.py);
     ctx.stroke();
+    ctx.restore();
 
-    drawAnchor(ctx, a.px, a.py, "#60a5fa", "PK_A");
-    drawAnchor(ctx, b.px, b.py, "#f472b6", "PK_B");
-    drawAnchor(ctx, s.px, s.py, "#6ee7b7", "shared");
+    drawAnchor(ctx, a.px, a.py, palette.actorA, "PK_A");
+    drawAnchor(ctx, b.px, b.py, palette.actorB, "PK_B");
+    drawAnchor(ctx, s.px, s.py, palette.shared, "shared");
 
     els.readout.innerHTML = `
       <div class="row"><span class="label">Alice PK.x</span> <code>${shortCoord(pkA.pk_x)}</code></div>
