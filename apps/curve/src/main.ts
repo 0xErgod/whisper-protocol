@@ -5,10 +5,13 @@
  * No curve math here — that's all behind `crypto-wasm`. Each panel
  * lives in its own module:
  *
- *  - `walk-panel`     — cyclic walk of generator multiples
- *  - `keypair-panel`  — 64-byte seed → public key
- *  - `ecdh-panel`     — Alice + Bob seeds → shared point (with the
- *                       symmetry property asserted visually)
+ *  - `walk-panel`      — cyclic walk of generator multiples
+ *  - `keypair-panel`   — 64-byte seed → public key
+ *  - `ecdh-panel`      — Alice + Bob seeds → shared point (with the
+ *                        symmetry property asserted visually)
+ *  - `pedersen-panel`  — two (value, blinding) pairs → three
+ *                        commitments showing the additive-homomorphism
+ *                        property
  *
  * All three panels exist for the same reason: each is an end-to-end
  * exercise of the Rust → WASM → TypeScript chain against a different
@@ -20,6 +23,7 @@ import init from "crypto-wasm";
 
 import { setupEcdhPanel } from "./ecdh-panel";
 import { setupKeypairPanel } from "./keypair-panel";
+import { setupPedersenPanel } from "./pedersen-panel";
 import { setupWalkPanel } from "./walk-panel";
 
 await init();
@@ -42,4 +46,14 @@ setupEcdhPanel({
   canvas: document.getElementById("stage-ecdh") as HTMLCanvasElement,
   randomBtn: document.getElementById("ecdh-random") as HTMLButtonElement,
   readout: document.getElementById("readout-ecdh") as HTMLDivElement,
+});
+
+setupPedersenPanel({
+  canvas: document.getElementById("stage-pedersen") as HTMLCanvasElement,
+  valueA: document.getElementById("pedersen-value-a") as HTMLInputElement,
+  valueB: document.getElementById("pedersen-value-b") as HTMLInputElement,
+  blindingA: document.getElementById("pedersen-blinding-a") as HTMLInputElement,
+  blindingB: document.getElementById("pedersen-blinding-b") as HTMLInputElement,
+  randomBtn: document.getElementById("pedersen-random") as HTMLButtonElement,
+  readout: document.getElementById("readout-pedersen") as HTMLDivElement,
 });

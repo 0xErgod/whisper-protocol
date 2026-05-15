@@ -90,10 +90,43 @@
         </div>
       </section>
 
+      <!-- Panel 4: Pedersen commitments -->
+      <section class="section">
+        <h2 class="section-title">pedersen commitments</h2>
+        <div class="panel">
+          <canvas id="stage-pedersen" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              two (value, blinding) pairs → three commitments. the protocol's
+              additive-homomorphism contract:
+              <code>C(a,r_a) + C(b,r_b) ≡ C(a+b, r_a+r_b)</code>. the third
+              point — labelled <code>C_a+b</code> — is computed via the
+              right-hand side; the left-hand side would equal it in the group
+              (point addition not shown here, but verified at the byte level
+              by the rust + wasm test suites).
+            </p>
+            <div class="controls">
+              <label for="pedersen-value-a">value a</label>
+              <input id="pedersen-value-a" type="number" min="0" max="1000" value="42" />
+              <label for="pedersen-value-b">value b</label>
+              <input id="pedersen-value-b" type="number" min="0" max="1000" value="43" />
+            </div>
+            <div class="controls">
+              <label for="pedersen-blinding-a">r_a</label>
+              <input id="pedersen-blinding-a" type="text" value="2" />
+              <label for="pedersen-blinding-b">r_b</label>
+              <input id="pedersen-blinding-b" type="text" value="5" />
+              <button id="pedersen-random">random r</button>
+            </div>
+            <div class="readout" id="readout-pedersen">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
       <footer>
         curve math: <code>crates/crypto</code> (rust) → <code>crates/crypto-wasm</code> → this app.
         contracts: <code>specs/babyjub-curve.md</code>, <code>specs/babyjub-keypair.md</code>,
-        <code>specs/babyjub-ecdh.md</code>.
+        <code>specs/babyjub-ecdh.md</code>, <code>specs/babyjub-pedersen.md</code>.
       </footer>
     </div>
 
