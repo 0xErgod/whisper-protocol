@@ -152,11 +152,39 @@
         </div>
       </section>
 
+      <!-- Panel 6: text-utf8-v1 encoding -->
+      <section class="section">
+        <h2 class="section-title">text-utf8-v1 encoding</h2>
+        <div class="panel">
+          <canvas id="stage-encoding" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              type text → see the 9-element field stream → round-trip back
+              to bytes. <code>f_0</code> is the length prefix in bytes
+              (shown as a bar against the 248-byte max); <code>f_1..f_8</code>
+              are 31-byte chunks (bright when non-zero, dim when zero-padded).
+              the symmetry line confirms decode(encode(bytes)) ≡ bytes — the
+              load-bearing round-trip invariant pinned in
+              <code>specs/encodings/text-utf8-v1.md</code>.
+            </p>
+            <textarea
+              id="encoding-text"
+              class="seed"
+              spellcheck="false"
+              rows="3"
+              aria-label="text payload (≤ 248 bytes)"
+            ></textarea>
+            <div class="readout" id="readout-encoding">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
       <footer>
         curve math: <code>crates/crypto</code> (rust) → <code>crates/crypto-wasm</code> → this app.
         contracts: <code>specs/babyjub-curve.md</code>, <code>specs/babyjub-keypair.md</code>,
         <code>specs/babyjub-ecdh.md</code>, <code>specs/babyjub-pedersen.md</code>,
-        <code>specs/babyjub-schnorr.md</code>.
+        <code>specs/babyjub-schnorr.md</code>,
+        <code>specs/encodings/text-utf8-v1.md</code>.
       </footer>
     </div>
 

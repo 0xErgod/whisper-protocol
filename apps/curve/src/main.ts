@@ -15,6 +15,8 @@
  *  - `schnorr-panel`   — sign a field-element message, plot PK + R,
  *                        verify in-page; tamper button to demo the
  *                        rejection path
+ *  - `encoding-panel`  — type text, see the 9-element field stream
+ *                        of `text-utf8-v1`, round-trip back to bytes
  *
  * All three panels exist for the same reason: each is an end-to-end
  * exercise of the Rust → WASM → TypeScript chain against a different
@@ -25,6 +27,7 @@
 import init from "crypto-wasm";
 
 import { setupEcdhPanel } from "./ecdh-panel";
+import { setupEncodingPanel } from "./encoding-panel";
 import { setupKeypairPanel } from "./keypair-panel";
 import { setupPedersenPanel } from "./pedersen-panel";
 import { setupSchnorrPanel } from "./schnorr-panel";
@@ -68,4 +71,10 @@ setupSchnorrPanel({
   randomBtn: document.getElementById("schnorr-random") as HTMLButtonElement,
   tamperBtn: document.getElementById("schnorr-tamper") as HTMLButtonElement,
   readout: document.getElementById("readout-schnorr") as HTMLDivElement,
+});
+
+setupEncodingPanel({
+  canvas: document.getElementById("stage-encoding") as HTMLCanvasElement,
+  textInput: document.getElementById("encoding-text") as HTMLTextAreaElement,
+  readout: document.getElementById("readout-encoding") as HTMLDivElement,
 });
