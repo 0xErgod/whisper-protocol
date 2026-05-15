@@ -26,7 +26,7 @@
 
 use wasm_bindgen_test::*;
 
-use crypto_wasm::{generator, keypair_from_seed, mul_generator, validate_point};
+use crypto_wasm::{ecdh, generator, keypair_from_seed, mul_generator, validate_point};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -209,4 +209,58 @@ fn validate_point_rejects_garbage_coords() {
     assert!(validate_point("abc", "1").is_err());
     assert!(validate_point("", "1").is_err());
     assert!(validate_point("-1", "1").is_err());
+}
+
+// --- ecdh fixture (specs/babyjub-ecdh.md § Worked Example) ----------------
+
+/// Build Alice / Bob's spec seeds: 64 bytes, single non-zero in byte 0.
+fn seed_with_byte_zero(byte: u8) -> [u8; 64] {
+    let mut s = [0u8; 64];
+    s[0] = byte;
+    s
+}
+
+/// `ecdh(Alice_seed, PK_Bob) == ecdh(Bob_seed, PK_Alice)`, and both
+/// equal the spec's pinned shared point — byte-for-byte across the
+/// JS<->WASM edge.
+#[wasm_bindgen_test]
+fn ecdh_matches_spec_and_is_symmetric() {
+    let alice_seed = seed_with_byte_zero(1);
+    let bob_seed = seed_with_byte_zero(2);
+
+    let pk_a = keypair_from_seed(&alice_seed).expect("64-byte seed");
+    let pk_b = keypair_from_seed(&bob_seed).expect("64-byte seed");
+
+    let shared_ab = ecdh(&alice_seed, &pk_b.pk_x(), &pk_b.pk_y())
+        .expect("valid seed and PK");
+    let shared_ba = ecdh(&bob_seed, &pk_a.pk_x(), &pk_a.pk_y())
+        .expect("valid seed and PK");
+
+    let want_x =
+        "4441722070262887487676852990759346353102280890264110527729805261601919952792";
+    let want_y =
+        "18505774984025635106527431283405915983682689754171973024874112571296549171475";
+
+    assert_eq!(shared_ab.x(), want_x, "sk_A · PK_B x drifted across the boundary");
+    assert_eq!(shared_ab.y(), want_y, "sk_A · PK_B y drifted across the boundary");
+    assert_eq!(shared_ba.x(), want_x, "sk_B · PK_A x drifted across the boundary");
+    assert_eq!(shared_ba.y(), want_y, "sk_B · PK_A y drifted across the boundary");
+}
+
+/// A peer key that does not survive validation (off-curve, garbage,
+/// wrong-length seed) must come back as a JS exception, not a panic.
+/// The boundary's error contract for ECDH inputs.
+#[wasm_bindgen_test]
+fn ecdh_rejects_invalid_inputs() {
+    let seed = seed_with_byte_zero(1);
+    // Off-curve peer point.
+    assert!(ecdh(&seed, "1", "1").is_err(), "off-curve peer must error");
+    // Garbage peer x.
+    assert!(ecdh(&seed, "abc", "1").is_err(), "garbage peer x must error");
+    // Wrong seed length.
+    let g = generator();
+    assert!(
+        ecdh(&[0u8; 32], &g.x(), &g.y()).is_err(),
+        "wrong seed length must error",
+    );
 }

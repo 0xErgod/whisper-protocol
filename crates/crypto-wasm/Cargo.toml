@@ -32,3 +32,12 @@ features = ["js"]
 # `wasm-pack test` — the only way to exercise the actual JS<->WASM edge rather
 # than a native approximation of it.
 wasm-bindgen-test = "0.3"
+
+# `wasm-opt` is the size-shrinking post-pass that `wasm-pack` runs by default.
+# Disable it: on Windows the bundled wasm-opt fails on arkworks-heavy output
+# (the `wasm-opt --` invocation exits non-zero), and the optimization is a
+# size win, not a correctness step. The resulting `.wasm` is ~2 MB unoptimized
+# vs ~700 KB optimized — acceptable for the dev/viz consumer and easy to
+# revisit if size matters for a production deployment.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

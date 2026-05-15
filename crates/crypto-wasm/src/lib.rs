@@ -171,3 +171,43 @@ pub fn keypair_from_seed(seed: &[u8]) -> Result<Keypair, JsError> {
         pk_y: pk_strings.y,
     })
 }
+
+/// Baby Jubjub ECDH: compute the shared point between the caller's
+/// keypair (derived from `my_seed`) and the peer's public key
+/// (`peer_pk_x` / `peer_pk_y` as decimal strings).
+///
+/// Two parties calling this on each other's `(seed, peer_pk)` land on
+/// the same point (`Alice_sk · PK_Bob == Bob_sk · PK_Alice`). The
+/// `wasm-pack test` boundary fixture pins this property byte-for-byte
+/// against `specs/babyjub-ecdh.md`.
+///
+/// The peer's public key is validated as part of decoding: a malformed,
+/// off-curve, or small-subgroup point comes back as a JS exception
+/// rather than silently producing a degenerate shared secret. The
+/// caller's seed length is enforced at the boundary.
+///
+/// **Returns the raw shared point, not a derived encryption key.** The
+/// envelope-suite brick will add a KDF (Poseidon over the shared point
+/// plus context); doing that here would tie ECDH to one consumer. For
+/// non-envelope uses (equality proofs, PAKEs) the raw point is what's
+/// wanted anyway.
+#[wasm_bindgen]
+pub fn ecdh(my_seed: &[u8], peer_pk_x: &str, peer_pk_y: &str) -> Result<Point, JsError> {
+    let bytes: [u8; 64] = my_seed
+        .try_into()
+        .map_err(|_| JsError::new("seed must be exactly 64 bytes"))?;
+    let (sk, _) = babyjub::keypair_from_seed(&babyjub::Seed::from_bytes(bytes));
+
+    // The peer's PK is decoded through the validating wire decoder:
+    // garbage -> NotDecimal, off-curve -> NotOnCurve, small-subgroup
+    // -> NotInPrimeSubgroup. Each becomes a JS exception, none reach
+    // the curve operation. `from_validated_point` is sound here
+    // because `point_from_strings` enforces both on-curve and
+    // prime-subgroup membership before returning.
+    let peer_point = babyjub::point_from_strings(peer_pk_x, peer_pk_y)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let peer_pk = babyjub::PublicKey::from_validated_point(peer_point);
+
+    let shared = babyjub::shared_secret(&sk, &peer_pk);
+    Ok(babyjub::point_to_strings(&shared).into())
+}
