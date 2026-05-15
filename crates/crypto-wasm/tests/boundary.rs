@@ -28,7 +28,7 @@ use wasm_bindgen_test::*;
 
 use crypto_wasm::{
     ecdh, generator, keypair_from_seed, mul_generator, pedersen_commit, pedersen_h,
-    validate_point,
+    schnorr_sign, schnorr_verify, validate_point,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -323,4 +323,141 @@ fn pedersen_commit_rejects_garbage() {
     assert!(pedersen_commit("abc", "2").is_err(), "garbage value must error");
     assert!(pedersen_commit("1", "-3").is_err(), "negative blinding must error");
     assert!(pedersen_commit("", "2").is_err(), "empty value must error");
+}
+
+// --- schnorr fixture (specs/babyjub-schnorr.md § Worked Example) -------
+
+/// Build the spec's signer seed: byte 0 = 0x07, rest zero.
+fn schnorr_signer_seed() -> [u8; 64] {
+    let mut s = [0u8; 64];
+    s[0] = 7;
+    s
+}
+
+/// Vector 1: signing `m = 1` produces the pinned `(R, s)` byte-for-byte
+/// through the JS<->WASM edge.
+#[wasm_bindgen_test]
+fn schnorr_sign_vector_1_matches_spec() {
+    let seed = schnorr_signer_seed();
+    let sig = schnorr_sign(&seed, "1").expect("valid seed and m");
+    assert_eq!(
+        sig.r_x(),
+        "11632351294401981618034412607960018633759132523604891111145083805962634408526",
+    );
+    assert_eq!(
+        sig.r_y(),
+        "16437810892664933023884131539764605025844133936197983566486350081488662891513",
+    );
+    assert_eq!(
+        sig.s(),
+        "1812749329934557351717178747835822339686472044802696027660553171848252014907",
+    );
+}
+
+/// Vector 1: verification accepts the spec's pinned signature when
+/// supplied via decimal strings (the path a JS caller takes).
+#[wasm_bindgen_test]
+fn schnorr_verify_vector_1_accepts() {
+    let kp = keypair_from_seed(&schnorr_signer_seed()).expect("64-byte seed");
+    let ok = schnorr_verify(
+        &kp.pk_x(),
+        &kp.pk_y(),
+        "1",
+        "11632351294401981618034412607960018633759132523604891111145083805962634408526",
+        "16437810892664933023884131539764605025844133936197983566486350081488662891513",
+        "1812749329934557351717178747835822339686472044802696027660553171848252014907",
+    )
+    .expect("inputs are well-formed");
+    assert!(ok, "spec vector 1 must verify");
+}
+
+/// Sign-then-verify roundtrip: a freshly-signed signature must verify.
+/// Catches a class of "verify is wired wrong" bugs that the static
+/// fixture wouldn't (the fixture pins both sides; a sign-then-verify
+/// round-trip catches them being consistently wrong together).
+#[wasm_bindgen_test]
+fn schnorr_sign_then_verify_roundtrips() {
+    let seed = schnorr_signer_seed();
+    let kp = keypair_from_seed(&seed).expect("64-byte seed");
+    let m = "42";
+    let sig = schnorr_sign(&seed, m).expect("sign");
+    let ok = schnorr_verify(&kp.pk_x(), &kp.pk_y(), m, &sig.r_x(), &sig.r_y(), &sig.s())
+        .expect("verify inputs are well-formed");
+    assert!(ok);
+}
+
+/// Tamper with the message: verification must return `false`, not
+/// throw. (A throw would conflate "wrong signature" with "broken
+/// inputs" at the JS side.)
+#[wasm_bindgen_test]
+fn schnorr_verify_rejects_tampered_message() {
+    let seed = schnorr_signer_seed();
+    let kp = keypair_from_seed(&seed).expect("64-byte seed");
+    let sig = schnorr_sign(&seed, "42").expect("sign");
+    let ok = schnorr_verify(
+        &kp.pk_x(),
+        &kp.pk_y(),
+        "43",            // wrong message
+        &sig.r_x(),
+        &sig.r_y(),
+        &sig.s(),
+    )
+    .expect("inputs are well-formed");
+    assert!(!ok, "verification must reject a tampered message");
+}
+
+/// Tamper with the response scalar `s`: verification must return
+/// `false`. We tamper by substituting a different, known-good scalar
+/// — using another vector's `s` is the cleanest "valid-looking but
+/// wrong" injection.
+#[wasm_bindgen_test]
+fn schnorr_verify_rejects_tampered_s() {
+    let seed = schnorr_signer_seed();
+    let kp = keypair_from_seed(&seed).expect("64-byte seed");
+    let sig_42 = schnorr_sign(&seed, "42").expect("sign 42");
+    let sig_43 = schnorr_sign(&seed, "43").expect("sign 43");
+
+    // Use vector-43's `s` against vector-42's `(R, m)`. Both scalars
+    // are valid `Fr` elements (the wire decoder accepts them) but the
+    // signature equation no longer holds.
+    let ok = schnorr_verify(
+        &kp.pk_x(),
+        &kp.pk_y(),
+        "42",
+        &sig_42.r_x(),
+        &sig_42.r_y(),
+        &sig_43.s(),
+    )
+    .expect("inputs are well-formed");
+    assert!(!ok, "verification must reject a tampered s");
+}
+
+/// Malformed boundary inputs throw. Catches a regression where a
+/// boundary panic would crash the wasm module instead of surfacing as
+/// a JS exception.
+#[wasm_bindgen_test]
+fn schnorr_rejects_invalid_inputs() {
+    let seed = schnorr_signer_seed();
+    let kp = keypair_from_seed(&seed).expect("64-byte seed");
+    let sig = schnorr_sign(&seed, "42").expect("sign");
+
+    // Wrong seed length on sign.
+    assert!(schnorr_sign(&[0u8; 32], "42").is_err(), "wrong seed length must throw");
+    // Negative m on sign.
+    assert!(schnorr_sign(&seed, "-3").is_err(), "negative m must throw");
+    // Off-curve PK on verify.
+    assert!(
+        schnorr_verify("1", "1", "42", &sig.r_x(), &sig.r_y(), &sig.s()).is_err(),
+        "off-curve PK must throw",
+    );
+    // Off-curve R on verify.
+    assert!(
+        schnorr_verify(&kp.pk_x(), &kp.pk_y(), "42", "1", "1", &sig.s()).is_err(),
+        "off-curve R must throw",
+    );
+    // Garbage m on verify.
+    assert!(
+        schnorr_verify(&kp.pk_x(), &kp.pk_y(), "abc", &sig.r_x(), &sig.r_y(), &sig.s()).is_err(),
+        "garbage m must throw",
+    );
 }

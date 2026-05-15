@@ -247,3 +247,113 @@ pub fn pedersen_commit(value: &str, blinding: &str) -> Result<Point, JsError> {
 pub fn pedersen_h() -> Point {
     babyjub::point_to_strings(&babyjub::h_generator()).into()
 }
+
+/// A Baby Jubjub Schnorr signature in the boundary's wire form:
+/// commitment point `R` as decimal-string coordinates, response scalar
+/// `s` as a decimal string. All three are public — there is no
+/// sensitive material in a signature.
+#[wasm_bindgen]
+#[derive(Clone, Debug)]
+pub struct Signature {
+    r_x: String,
+    r_y: String,
+    s: String,
+}
+
+#[wasm_bindgen]
+impl Signature {
+    /// Commitment-point `R.x` coordinate, base-10.
+    #[wasm_bindgen(getter)]
+    pub fn r_x(&self) -> String {
+        self.r_x.clone()
+    }
+
+    /// Commitment-point `R.y` coordinate, base-10.
+    #[wasm_bindgen(getter)]
+    pub fn r_y(&self) -> String {
+        self.r_y.clone()
+    }
+
+    /// Response scalar `s`, base-10.
+    #[wasm_bindgen(getter)]
+    pub fn s(&self) -> String {
+        self.s.clone()
+    }
+}
+
+/// Sign a single field-element message with the keypair derived from
+/// `seed`. Deterministic — same `(seed, m)` always produces the same
+/// signature. `m` is a base-10 decimal string interpreted as an
+/// element of `F_p` (the base field, not the scalar field).
+///
+/// **The signature primitive signs a field element, not arbitrary
+/// bytes.** A caller wanting to sign bytes hashes them to `F_p` first
+/// — see `specs/babyjub-schnorr.md` for the rationale. The boundary
+/// surface deliberately does not expose a byte-message variant.
+///
+/// `seed` length is enforced at the boundary (exactly 64 bytes). A
+/// malformed `m` is a JS exception, not a panic.
+#[wasm_bindgen]
+pub fn schnorr_sign(seed: &[u8], m: &str) -> Result<Signature, JsError> {
+    let bytes: [u8; 64] = seed
+        .try_into()
+        .map_err(|_| JsError::new("seed must be exactly 64 bytes"))?;
+    let m_fq = m
+        .parse::<babyjub::Fq>()
+        .map_err(|_| JsError::new("m must be a non-negative base-10 integer"))?;
+    // Reject leading signs explicitly, same hygiene rule the wire
+    // decoder applies to scalars: `BigInt.toString()` on a non-negative
+    // value never produces a sign, so a sign is a caller-side bug, not
+    // a representation we want to silently wrap.
+    if !m.bytes().all(|b| b.is_ascii_digit()) || m.is_empty() {
+        return Err(JsError::new("m must be a non-negative base-10 integer"));
+    }
+
+    let (sk, pk) = babyjub::keypair_from_seed(&babyjub::Seed::from_bytes(bytes));
+    let sig = babyjub::sign(&sk, &pk, m_fq);
+    let r_strings = babyjub::point_to_strings(&sig.r);
+    Ok(Signature {
+        r_x: r_strings.x,
+        r_y: r_strings.y,
+        s: babyjub::scalar_to_decimal(&sig.s),
+    })
+}
+
+/// Verify a Schnorr signature against a public key and message field
+/// element. Returns `true` iff valid; `false` for any tamper. Malformed
+/// inputs come back as a JS exception, distinguishing "invalid signature"
+/// (returns `false`) from "garbage input" (throws).
+///
+/// `pk_x` / `pk_y` is the signer's public key. `r_x` / `r_y` + `s` is the
+/// signature. Both points are decoded through the validating wire
+/// decoder — off-curve or small-subgroup points fail at decode time,
+/// before any signature math runs.
+#[wasm_bindgen]
+pub fn schnorr_verify(
+    pk_x: &str,
+    pk_y: &str,
+    m: &str,
+    r_x: &str,
+    r_y: &str,
+    s: &str,
+) -> Result<bool, JsError> {
+    let pk_point = babyjub::point_from_strings(pk_x, pk_y)
+        .map_err(|e| JsError::new(&format!("pk: {e}")))?;
+    let r_point = babyjub::point_from_strings(r_x, r_y)
+        .map_err(|e| JsError::new(&format!("R: {e}")))?;
+    let pk = babyjub::PublicKey::from_validated_point(pk_point);
+    let s_scalar = babyjub::scalar_from_decimal(s)
+        .map_err(|e| JsError::new(&format!("s: {e}")))?;
+    if !m.bytes().all(|b| b.is_ascii_digit()) || m.is_empty() {
+        return Err(JsError::new("m must be a non-negative base-10 integer"));
+    }
+    let m_fq = m
+        .parse::<babyjub::Fq>()
+        .map_err(|_| JsError::new("m must be a non-negative base-10 integer"))?;
+
+    let sig = babyjub::Signature {
+        r: r_point,
+        s: s_scalar,
+    };
+    Ok(babyjub::verify(&pk, m_fq, &sig))
+}
