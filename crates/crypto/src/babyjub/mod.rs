@@ -13,5 +13,6 @@ mod wire;
 pub use config::{BabyJubConfig, EdwardsAffine, EdwardsProjective, Fq, Fr};
 pub use curve::{generator, is_in_prime_subgroup, is_on_curve, mul, IDENTITY};
 pub use wire::{
-    point_to_strings, scalar_from_decimal, scalar_to_decimal, PointStrings, WireError,
+    point_from_strings, point_to_strings, scalar_from_decimal, scalar_to_decimal, PointStrings,
+    WireError,
 };
