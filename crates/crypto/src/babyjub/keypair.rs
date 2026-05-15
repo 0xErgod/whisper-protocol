@@ -106,20 +106,14 @@ impl core::fmt::Debug for Seed {
 /// The inner `Fr` is private and only exposed where the protocol needs it
 /// (scalar multiplication via the curve module). The type does not yet
 /// implement `Zeroize`; see the module docs.
-//
-// The field and `scalar()` accessor below are intentionally retained even
-// though no external caller reads them yet — they are the seam ECDH and
-// Schnorr will plug into next. `#[allow(dead_code)]` until that brick lands.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct SecretKey(Fr);
 
 impl SecretKey {
-    /// Borrow the scalar for in-crate use — e.g. signature nonce
-    /// construction or ECDH scalar mul. Deliberately `pub(crate)`: external
-    /// callers should compose at the `keypair`/`public_key` level, not by
-    /// poking the raw scalar.
-    #[allow(dead_code)]
+    /// Borrow the scalar for in-crate use — e.g. ECDH scalar mul, future
+    /// signature nonce construction. Deliberately `pub(crate)`: external
+    /// callers should compose at the `keypair` / `public_key` level, not by
+    /// poking the raw scalar. The first reader is `babyjub::ecdh`.
     pub(crate) fn scalar(&self) -> &Fr {
         &self.0
     }
@@ -154,6 +148,26 @@ impl PublicKey {
     /// a guaranteed-valid point. External callers receive `PublicKey`
     /// values only via wire decoders that validate explicitly.
     pub(crate) fn from_subgroup_point(point: EdwardsAffine) -> Self {
+        PublicKey(point)
+    }
+
+    /// Construct a `PublicKey` from a point the **caller** has already
+    /// validated as on-curve and in the prime-order subgroup.
+    ///
+    /// This is a typed promise: by constructing `PublicKey` this way,
+    /// the caller asserts the validation happened. The intended use is
+    /// the WASM binding's ECDH path, which decodes the peer key through
+    /// `point_from_strings` (which performs both checks) and then needs
+    /// to hand the validated point to `shared_secret`. A direct `pub`
+    /// constructor exists for that single seam; future consumers with
+    /// the same shape (validated by their own wire decoder, then handed
+    /// to a curve operation) can use it too.
+    ///
+    /// **Misuse**: passing an unvalidated point bypasses the protocol's
+    /// subgroup-confinement defence. Do not construct `PublicKey` this
+    /// way from raw `(x, y)` input — go through
+    /// `babyjub::point_from_strings` instead.
+    pub fn from_validated_point(point: EdwardsAffine) -> Self {
         PublicKey(point)
     }
 }
