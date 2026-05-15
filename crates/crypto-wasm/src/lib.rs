@@ -88,16 +88,86 @@ pub fn generator() -> Point {
 /// order) wrap, which is correct field behaviour. A malformed `scalar` —
 /// non-digit characters, a sign, empty — comes back as a JS exception, not a
 /// panic.
-///
-/// Arbitrary-base scalar multiplication is intentionally not exposed yet: it
-/// needs a `point_from_strings` decoder in `crypto::babyjub::wire`, and no
-/// consumer needs it until a primitive past the curve does. Adding it later is
-/// a new export here plus a tested decoder there — it does not disturb this
-/// function.
 #[wasm_bindgen]
 pub fn mul_generator(scalar: &str) -> Result<Point, JsError> {
     let k = babyjub::scalar_from_decimal(scalar)
         .map_err(|e| JsError::new(&e.to_string()))?;
     let product = babyjub::mul(&k, &babyjub::generator());
     Ok(babyjub::point_to_strings(&product).into())
+}
+
+/// Validate a point arriving from JavaScript as decimal-string coordinates.
+///
+/// Returns the same coordinates unchanged on success (so the JS caller can
+/// chain into other operations); returns a JS exception if either
+/// coordinate is malformed, or the point is off-curve, or the point is on
+/// the curve but not in the prime-order subgroup. This is the public
+/// `babyjub::point_from_strings` decoder exposed across the boundary —
+/// every external public key or ephemeral arriving from JS should pass
+/// through it before any cryptographic use downstream.
+#[wasm_bindgen]
+pub fn validate_point(x: &str, y: &str) -> Result<Point, JsError> {
+    let _ = babyjub::point_from_strings(x, y)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(Point {
+        x: x.to_string(),
+        y: y.to_string(),
+    })
+}
+
+/// A Baby Jubjub keypair derived from a 64-byte seed, in the boundary's
+/// wire form.
+///
+/// Only the **public** half crosses the boundary as `pk_x` / `pk_y` decimal
+/// strings. The secret scalar `sk` is **deliberately not exposed**: the
+/// production path is `wallet-derived-keys` re-deriving from a wallet
+/// signature when needed, never storing or transporting `sk` across the
+/// boundary. Test code that wants to confirm the derivation matches the
+/// spec checks `(pk_x, pk_y)` instead, which is mathematically equivalent —
+/// `Base8` is injective on `F_l`, so a matching public key uniquely pins
+/// the secret scalar.
+#[wasm_bindgen]
+#[derive(Clone, Debug)]
+pub struct Keypair {
+    pk_x: String,
+    pk_y: String,
+}
+
+#[wasm_bindgen]
+impl Keypair {
+    /// Public-key affine `x` coordinate, base-10.
+    #[wasm_bindgen(getter)]
+    pub fn pk_x(&self) -> String {
+        self.pk_x.clone()
+    }
+
+    /// Public-key affine `y` coordinate, base-10.
+    #[wasm_bindgen(getter)]
+    pub fn pk_y(&self) -> String {
+        self.pk_y.clone()
+    }
+}
+
+/// Derive a Baby Jubjub keypair from a 64-byte seed.
+///
+/// The seed is bytes — a `Uint8Array` from JavaScript — by design: the
+/// derivation is byte-exact and a decimal-string seed would obscure that.
+/// Length is enforced at the boundary: anything other than 64 bytes is a JS
+/// exception.
+///
+/// See `specs/babyjub-keypair.md` for the derivation and worked-example
+/// vectors. The `wasm-pack test` boundary test pins those vectors against
+/// this exact entry point — so a passing JS-side call here lands on the
+/// same public key the spec promises.
+#[wasm_bindgen]
+pub fn keypair_from_seed(seed: &[u8]) -> Result<Keypair, JsError> {
+    let bytes: [u8; 64] = seed
+        .try_into()
+        .map_err(|_| JsError::new("seed must be exactly 64 bytes"))?;
+    let (_sk, pk) = babyjub::keypair_from_seed(&babyjub::Seed::from_bytes(bytes));
+    let pk_strings = babyjub::point_to_strings(pk.point());
+    Ok(Keypair {
+        pk_x: pk_strings.x,
+        pk_y: pk_strings.y,
+    })
 }

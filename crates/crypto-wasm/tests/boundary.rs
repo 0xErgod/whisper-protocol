@@ -14,12 +14,19 @@
 //! confirms the spec contract holds end-to-end, all the way out to the
 //! browser, with no re-encoding in between.
 //!
-//! Run with: `wasm-pack test --headless --firefox crates/crypto-wasm`
-//! (or `--chrome`).
+//! Run with: `wasm-pack test --headless --chrome --release crates/crypto-wasm`
+//! (or `--firefox`).
+//!
+//! `--release` is required: arkworks generates functions whose local-count
+//! exceeds the wasm spec's 50,000-per-function limit in debug builds. The
+//! release profile inlines and shrinks them below the limit. This is not a
+//! correctness issue — release builds are how the binding ships anyway —
+//! but it is a non-obvious gotcha worth pinning here so a future contributor
+//! does not waste time on a `--debug` invocation that cannot work.
 
 use wasm_bindgen_test::*;
 
-use crypto_wasm::{generator, mul_generator};
+use crypto_wasm::{generator, keypair_from_seed, mul_generator, validate_point};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -113,4 +120,93 @@ fn malformed_scalar_is_an_error_not_a_panic() {
             "expected an error for malformed scalar {bad:?}",
         );
     }
+}
+
+// --- keypair fixture (specs/babyjub-keypair.md § Worked Example) ----------
+
+/// Seed of all zeros: spec § Worked Example, vector 1, driven through the
+/// JS boundary as a `Uint8Array` (here, a `&[u8]`).
+#[wasm_bindgen_test]
+fn keypair_fixture_all_zero_seed() {
+    let kp = keypair_from_seed(&[0u8; 64]).expect("64-byte seed");
+    assert_eq!(
+        kp.pk_x(),
+        "9052145210158052161818611168469442415783119048928084171117132839267951576749",
+    );
+    assert_eq!(
+        kp.pk_y(),
+        "15138733388225546515036950290042250293266309799081989529651843475752774394912",
+    );
+}
+
+/// Seed of `0x42 × 64`: spec § Worked Example, vector 2.
+#[wasm_bindgen_test]
+fn keypair_fixture_all_0x42_seed() {
+    let kp = keypair_from_seed(&[0x42u8; 64]).expect("64-byte seed");
+    assert_eq!(
+        kp.pk_x(),
+        "10242056643687748052026914853801031667608768151841054399444813507230536137636",
+    );
+    assert_eq!(
+        kp.pk_y(),
+        "17209935276727295699825960001966777169457960631433628415363271904988532178005",
+    );
+}
+
+/// Seed `[0x01, 0x02, ..., 0x40]`: spec § Worked Example, vector 3. Catches
+/// a byte-order mistake in the chunking that a single-symbol fixture would
+/// not.
+#[wasm_bindgen_test]
+fn keypair_fixture_increasing_seed() {
+    let mut seed = [0u8; 64];
+    for (i, byte) in seed.iter_mut().enumerate() {
+        *byte = (i + 1) as u8;
+    }
+    let kp = keypair_from_seed(&seed).expect("64-byte seed");
+    assert_eq!(
+        kp.pk_x(),
+        "20850129809617136780643076514291815738908181923486074779130442852041357820493",
+    );
+    assert_eq!(
+        kp.pk_y(),
+        "6638083023153244747644631095237619826300111037602892009430291132442244811183",
+    );
+}
+
+/// A seed of the wrong length must come back as a JS exception, not a panic.
+/// The boundary enforces the 64-byte contract.
+#[wasm_bindgen_test]
+fn keypair_rejects_wrong_seed_length() {
+    assert!(keypair_from_seed(&[]).is_err(), "empty seed must be an error");
+    assert!(keypair_from_seed(&[0u8; 32]).is_err(), "32-byte seed must be an error");
+    assert!(keypair_from_seed(&[0u8; 63]).is_err(), "63-byte seed must be an error");
+    assert!(keypair_from_seed(&[0u8; 65]).is_err(), "65-byte seed must be an error");
+}
+
+// --- validate_point boundary contract -------------------------------------
+
+/// The generator survives `validate_point` — the simplest "is this point
+/// even valid?" check passes for a known-good point.
+#[wasm_bindgen_test]
+fn validate_point_accepts_generator() {
+    let g = generator();
+    let v = validate_point(&g.x(), &g.y()).expect("Base8 is valid");
+    assert_eq!(v.x(), g.x());
+    assert_eq!(v.y(), g.y());
+}
+
+/// `validate_point` rejects an off-curve point as a JS exception. `(1, 1)`
+/// is the simplest off-curve fixture.
+#[wasm_bindgen_test]
+fn validate_point_rejects_off_curve() {
+    assert!(validate_point("1", "1").is_err());
+}
+
+/// `validate_point` rejects malformed coordinate strings the same way the
+/// scalar entry points do.
+#[wasm_bindgen_test]
+fn validate_point_rejects_garbage_coords() {
+    assert!(validate_point("abc", "1").is_err());
+    assert!(validate_point("", "1").is_err());
+    assert!(validate_point("-1", "1").is_err());
 }
