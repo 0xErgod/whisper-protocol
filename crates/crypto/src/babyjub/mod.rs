@@ -11,6 +11,7 @@ mod curve;
 mod ecdh;
 mod keypair;
 mod pedersen;
+mod schnorr;
 mod wire;
 
 pub use config::{BabyJubConfig, EdwardsAffine, EdwardsProjective, Fq, Fr};
@@ -18,6 +19,7 @@ pub use curve::{generator, is_in_prime_subgroup, is_on_curve, mul, IDENTITY};
 pub use ecdh::shared_secret;
 pub use keypair::{keypair_from_seed, PublicKey, SecretKey, Seed, KEYPAIR_DOMAIN};
 pub use pedersen::{commit, derive_h, h_generator, H_DOMAIN};
+pub use schnorr::{sign, verify, Signature, CHALLENGE_DOMAIN, NONCE_DOMAIN};
 pub use wire::{
     point_from_strings, point_to_strings, scalar_from_decimal, scalar_to_decimal, PointStrings,
     WireError,

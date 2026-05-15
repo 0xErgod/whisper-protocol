@@ -46,6 +46,19 @@ pub fn poseidon3(inputs: &[Fq; 3]) -> Fq {
         .expect("Poseidon over fixed-arity field elements never fails")
 }
 
+/// Hash exactly six field elements with circomlib's Poseidon-BN254
+/// (arity 6, state size 7). Matches `poseidon-lite::poseidon6` and
+/// circom's `poseidon([_, _, _, _, _, _])`. Used by the Schnorr
+/// signature scheme's challenge hash:
+/// `Poseidon6(domain, R.x, R.y, PK.x, PK.y, m)`.
+pub fn poseidon6(inputs: &[Fq; 6]) -> Fq {
+    let mut hasher = Poseidon::<Fq>::new_circom(6)
+        .expect("circomlib Poseidon supports arity 6");
+    hasher
+        .hash(inputs)
+        .expect("Poseidon over fixed-arity field elements never fails")
+}
+
 /// Build a domain-tag field element from a short, descriptive UTF-8 string.
 ///
 /// Construction: `bytes_to_field_be(Blake2b-256(domain_string))`. This is
@@ -100,6 +113,32 @@ mod tests {
         let b = Fq::from(2u64);
         let c = Fq::from(3u64);
         assert_ne!(poseidon3(&[a, b, c]), poseidon3(&[c, b, a]));
+    }
+
+    /// Same smoke checks for `poseidon6`: deterministic, non-trivial,
+    /// order-sensitive. Confirms the binding is wired through to the
+    /// arity-6 circomlib parameter set, not just the arity-3 one.
+    #[test]
+    fn poseidon6_is_deterministic_and_nontrivial() {
+        let z = Fq::ZERO;
+        let h = poseidon6(&[z, z, z, z, z, z]);
+        assert_eq!(h, poseidon6(&[z, z, z, z, z, z]));
+        assert_ne!(h, z);
+    }
+
+    #[test]
+    fn poseidon6_is_order_sensitive() {
+        let v = [
+            Fq::from(1u64),
+            Fq::from(2u64),
+            Fq::from(3u64),
+            Fq::from(4u64),
+            Fq::from(5u64),
+            Fq::from(6u64),
+        ];
+        let mut reversed = v;
+        reversed.reverse();
+        assert_ne!(poseidon6(&v), poseidon6(&reversed));
     }
 
     /// The domain-tag construction is deterministic and string-sensitive.
