@@ -30,6 +30,9 @@ export const palette = {
   actorA: token("--bright-orange"),
   actorB: token("--bright-magenta"),
   shared: token("--bright-green"),
+  // The semantic "rejected / broken" color, mirroring the readout's
+  // `.symmetry.bad` style on the canvas side.
+  bad: token("--bad"),
 };
 
 /**

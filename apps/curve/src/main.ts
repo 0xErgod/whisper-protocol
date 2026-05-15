@@ -12,6 +12,9 @@
  *  - `pedersen-panel`  — two (value, blinding) pairs → three
  *                        commitments showing the additive-homomorphism
  *                        property
+ *  - `schnorr-panel`   — sign a field-element message, plot PK + R,
+ *                        verify in-page; tamper button to demo the
+ *                        rejection path
  *
  * All three panels exist for the same reason: each is an end-to-end
  * exercise of the Rust → WASM → TypeScript chain against a different
@@ -24,6 +27,7 @@ import init from "crypto-wasm";
 import { setupEcdhPanel } from "./ecdh-panel";
 import { setupKeypairPanel } from "./keypair-panel";
 import { setupPedersenPanel } from "./pedersen-panel";
+import { setupSchnorrPanel } from "./schnorr-panel";
 import { setupWalkPanel } from "./walk-panel";
 
 await init();
@@ -56,4 +60,12 @@ setupPedersenPanel({
   blindingB: document.getElementById("pedersen-blinding-b") as HTMLInputElement,
   randomBtn: document.getElementById("pedersen-random") as HTMLButtonElement,
   readout: document.getElementById("readout-pedersen") as HTMLDivElement,
+});
+
+setupSchnorrPanel({
+  canvas: document.getElementById("stage-schnorr") as HTMLCanvasElement,
+  messageInput: document.getElementById("schnorr-message") as HTMLInputElement,
+  randomBtn: document.getElementById("schnorr-random") as HTMLButtonElement,
+  tamperBtn: document.getElementById("schnorr-tamper") as HTMLButtonElement,
+  readout: document.getElementById("readout-schnorr") as HTMLDivElement,
 });
