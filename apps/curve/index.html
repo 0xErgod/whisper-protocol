@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Baby Jubjub — curve world</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0e0f13;
+        --fg: #e6e7ea;
+        --dim: #8a8d96;
+        --accent: #6ee7b7;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+      }
+      header {
+        padding: 16px 20px;
+        border-bottom: 1px solid #1e2028;
+      }
+      header h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+      header p { margin: 0; color: var(--dim); }
+      main {
+        flex: 1;
+        display: flex;
+        gap: 20px;
+        padding: 20px;
+        align-items: flex-start;
+      }
+      #stage {
+        border: 1px solid #1e2028;
+        background: #0a0b0e;
+        border-radius: 4px;
+      }
+      aside {
+        flex: 1;
+        min-width: 280px;
+      }
+      aside h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--dim);
+        margin: 0 0 8px;
+      }
+      .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+      label { color: var(--dim); }
+      input[type="range"] { flex: 1; accent-color: var(--accent); }
+      .val { color: var(--accent); min-width: 4ch; text-align: right; }
+      .readout {
+        border: 1px solid #1e2028;
+        border-radius: 4px;
+        padding: 10px 12px;
+        word-break: break-all;
+        color: var(--dim);
+      }
+      .readout .k { color: var(--accent); }
+      .readout .coord { color: var(--fg); display: block; margin-top: 4px; }
+      footer {
+        padding: 10px 20px;
+        border-top: 1px solid #1e2028;
+        color: var(--dim);
+        font-size: 12px;
+      }
+      code { color: var(--fg); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Baby Jubjub — curve world</h1>
+      <p>
+        Scalar multiples of the generator <code>Base8</code>, plotted as the
+        cyclic walk <code>1·G, 2·G, 3·G, …</code>
+      </p>
+    </header>
+    <main>
+      <canvas id="stage" width="640" height="640"></canvas>
+      <aside>
+        <h2>The walk</h2>
+        <div class="controls">
+          <label for="steps">steps</label>
+          <input id="steps" type="range" min="1" max="512" value="64" />
+          <span class="val" id="steps-val">64</span>
+        </div>
+        <div class="readout" id="readout">initializing…</div>
+        <h2 style="margin-top: 20px">What you are looking at</h2>
+        <p style="color: var(--dim)">
+          Each dot is <code>k·G</code> for some <code>k</code>. The coordinates
+          are 254-bit field elements, so plotted directly they look like noise
+          in a square — that randomness <em>is</em> the discrete-log hardness.
+          The connecting path shows scalar multiplication as a walk that
+          eventually cycles through the whole prime-order subgroup.
+        </p>
+      </aside>
+    </main>
+    <footer>
+      curve math: <code>crates/crypto</code> (Rust) → <code>crates/crypto-wasm</code>
+      → this app. constants pinned in <code>specs/babyjub-curve.md</code>.
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

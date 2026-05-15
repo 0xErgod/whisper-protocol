@@ -17,6 +17,10 @@ dist/
 *.tsbuildinfo
 **/*.tsbuildinfo
 
+# wasm-pack output: generated from crates/*-wasm Rust sources on demand by the
+# consuming app's `wasm` build script. Never committed.
+crates/*-wasm/pkg/
+
 # Local artifacts that shouldn't ever be committed
 publish-output.json
 publish-testnet.json

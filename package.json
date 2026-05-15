@@ -8,6 +8,7 @@
     "build:all": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "dev:web": "pnpm --filter whisper-web run dev",
+    "dev:curve": "pnpm --filter curve-viz run dev",
     "test": "pnpm -r run test",
     "release:sdk": "pnpm --filter @whisper-protocol/sdk exec semantic-release",
     "release:wallet-derived-keys": "pnpm --filter @whisper-protocol/wallet-derived-keys exec semantic-release"
