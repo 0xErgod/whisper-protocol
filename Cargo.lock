@@ -430,8 +430,10 @@ dependencies = [
 name = "crypto-wasm"
 version = "0.1.0"
 dependencies = [
+ "ark-ff",
  "crypto",
  "getrandom",
+ "text-utf8-v1",
  "wasm-bindgen",
  "wasm-bindgen-test",
 ]
@@ -1046,6 +1048,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "text-utf8-v1"
+version = "0.1.0"
+dependencies = [
+ "ark-ff",
+ "crypto",
 ]
 
 [[package]]
