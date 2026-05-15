@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/secret-sharing-cli", "crates/crypto"]
+members = ["crates/secret-sharing-cli", "crates/crypto", "crates/crypto-wasm"]
 resolver = "3"

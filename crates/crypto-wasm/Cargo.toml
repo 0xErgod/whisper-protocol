@@ -1,0 +1,34 @@
+# NOTE(name): working name `crypto-wasm` — the WASM binding face of the
+# `crypto` crate. No product name baked in; a rename touches this file, the
+# workspace member entry, and the `pkg` name consumed by `apps/`.
+[package]
+name = "crypto-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "WASM bindings for the crypto crate: thin Uint8Array/string-boundary wrappers, zero logic."
+
+[lib]
+# `cdylib` is the crate type wasm-bindgen / wasm-pack compile to a `.wasm`
+# module. `rlib` is kept so the crate can still be unit-tested natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The single source of truth. This crate adds NO cryptographic logic — it only
+# re-shapes `crypto`'s already-tested API for the JS boundary.
+crypto = { path = "../crypto" }
+wasm-bindgen = "0.2"
+
+[dependencies.getrandom]
+# arkworks' RNG path pulls in `getrandom`. On `wasm32-unknown-unknown` it has
+# no OS entropy source by default and the build fails; the `js` feature routes
+# it through the browser's `crypto.getRandomValues`. The curve viz does not
+# itself generate randomness, but `crypto` links arkworks code paths that
+# reference `getrandom`, so the feature must be enabled at the final artifact.
+version = "0.2"
+features = ["js"]
+
+[dev-dependencies]
+# `wasm-bindgen-test` runs the boundary tests in a real (headless) browser via
+# `wasm-pack test` — the only way to exercise the actual JS<->WASM edge rather
+# than a native approximation of it.
+wasm-bindgen-test = "0.3"
