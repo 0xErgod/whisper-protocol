@@ -20,3 +20,4 @@
 //! commitments, Schnorr-style signatures.
 
 pub mod babyjub;
+pub mod poseidon;
