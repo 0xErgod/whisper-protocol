@@ -28,7 +28,8 @@ use wasm_bindgen_test::*;
 
 use crypto_wasm::{
     ecdh, generator, keypair_from_seed, mul_generator, pedersen_commit, pedersen_h,
-    schnorr_sign, schnorr_verify, validate_point,
+    schnorr_sign, schnorr_verify, text_utf8_v1_decode, text_utf8_v1_encode, text_utf8_v1_id,
+    validate_point,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -459,5 +460,96 @@ fn schnorr_rejects_invalid_inputs() {
     assert!(
         schnorr_verify(&kp.pk_x(), &kp.pk_y(), "abc", &sig.r_x(), &sig.r_y(), &sig.s()).is_err(),
         "garbage m must throw",
+    );
+}
+
+// --- text-utf8-v1 fixture (specs/encodings/text-utf8-v1.md) ---------------
+
+/// `encoding_id` matches the spec. Catches any drift in the path-based
+/// id derivation across the boundary.
+#[wasm_bindgen_test]
+fn text_utf8_v1_id_matches_spec() {
+    assert_eq!(
+        text_utf8_v1_id(),
+        "10251905648233427808659162032937842155138269080868533503078341140126603942221",
+    );
+}
+
+/// Vector 2 (`"hello, world!"`): encode produces the pinned field
+/// stream and the round-trip decode yields the exact input bytes.
+#[wasm_bindgen_test]
+fn text_utf8_v1_hello_roundtrips_through_boundary() {
+    let s = b"hello, world!";
+    let stream = text_utf8_v1_encode(s).expect("encode");
+    assert_eq!(stream.len(), 9);
+    assert_eq!(stream[0], "13");
+    assert_eq!(
+        stream[1],
+        "184452094211679030227880241948843765817935618364777678222724444834882387968",
+    );
+    for f in &stream[2..] {
+        assert_eq!(f, "0");
+    }
+    let decoded = text_utf8_v1_decode(stream).expect("decode");
+    assert_eq!(decoded.as_slice(), s);
+}
+
+/// Vector 3 (multibyte UTF-8). Length is in bytes; 7 chars × 3 = 21.
+#[wasm_bindgen_test]
+fn text_utf8_v1_multibyte_roundtrips_through_boundary() {
+    let s = "こんにちは世界".as_bytes();
+    let stream = text_utf8_v1_encode(s).expect("encode");
+    assert_eq!(stream[0], "21");
+    assert_eq!(
+        stream[1],
+        "401968596055196051537592476051840533583207957312700825760665297196064702464",
+    );
+    let decoded = text_utf8_v1_decode(stream).expect("decode");
+    assert_eq!(decoded.as_slice(), s);
+}
+
+/// Vector 4 (full-length, 248 × `'x'`). Every chunk reads the same
+/// pinned constant.
+#[wasm_bindgen_test]
+fn text_utf8_v1_full_length_through_boundary() {
+    let s: Vec<u8> = vec![b'x'; 248];
+    let stream = text_utf8_v1_encode(&s).expect("encode");
+    assert_eq!(stream[0], "248");
+    let chunk_x =
+        "212853105215654770999211369501264536494981589458898095660767617661605017720";
+    for f in &stream[1..] {
+        assert_eq!(f, chunk_x);
+    }
+    let decoded = text_utf8_v1_decode(stream).expect("decode");
+    assert_eq!(decoded, s);
+}
+
+/// The boundary's error contract: malformed inputs throw, not panic.
+/// One assertion per failure mode the spec defines.
+#[wasm_bindgen_test]
+fn text_utf8_v1_rejects_invalid_inputs() {
+    // Over-length on encode.
+    let too_long = vec![b'x'; 249];
+    assert!(text_utf8_v1_encode(&too_long).is_err(), "over-length must throw");
+
+    // Non-UTF-8 on encode.
+    let not_utf8 = [0xC3u8, 0x28];
+    assert!(text_utf8_v1_encode(&not_utf8).is_err(), "non-utf8 must throw");
+
+    // Wrong arity on decode (8 elements instead of 9).
+    let too_few: Vec<String> = vec!["0".to_string(); 8];
+    assert!(text_utf8_v1_decode(too_few).is_err(), "wrong arity must throw");
+
+    // Garbage decimal string on decode.
+    let mut garbage: Vec<String> = vec!["0".to_string(); 9];
+    garbage[3] = "abc".to_string();
+    assert!(text_utf8_v1_decode(garbage).is_err(), "garbage decimal must throw");
+
+    // Length prefix > MAX_BYTES on decode.
+    let mut oversize: Vec<String> = vec!["0".to_string(); 9];
+    oversize[0] = "249".to_string();
+    assert!(
+        text_utf8_v1_decode(oversize).is_err(),
+        "over-MAX length prefix must throw",
     );
 }

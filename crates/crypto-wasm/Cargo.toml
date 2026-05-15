@@ -16,7 +16,15 @@ crate-type = ["cdylib", "rlib"]
 # The single source of truth. This crate adds NO cryptographic logic — it only
 # re-shapes `crypto`'s already-tested API for the JS boundary.
 crypto = { path = "../crypto" }
+# Encoding crates are pure consumers of `crypto`'s `BytePayloadEncoding`
+# trait. Adding a new encoding to the WASM surface is one new dependency
+# here plus one new pair of `encode_<name>` / `decode_<name>` exports.
+text-utf8-v1 = { path = "../encodings/text-utf8-v1" }
 wasm-bindgen = "0.2"
+# Needed for `PrimeField::into_bigint()` when rendering `Fq` field
+# elements as decimal strings at the boundary. Doesn't add new logic
+# — just re-uses the bigint conversion already pulled in by `crypto`.
+ark-ff = "0.5"
 
 [dependencies.getrandom]
 # arkworks' RNG path pulls in `getrandom`. On `wasm32-unknown-unknown` it has

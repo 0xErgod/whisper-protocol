@@ -357,3 +357,78 @@ pub fn schnorr_verify(
     };
     Ok(babyjub::verify(&pk, m_fq, &sig))
 }
+
+// --- encoding registry bindings ----------------------------------------
+//
+// One pair of exports per registered encoding: `encode_<name>` /
+// `decode_<name>`. Adding a new encoding to the WASM surface means
+// adding one dependency to `Cargo.toml` and one matching pair below;
+// there is no global dispatcher because there is no global runtime
+// registry (see `specs/encodings/README.md`).
+
+use crypto::encoding::BytePayloadEncoding;
+use crypto::encoding::FieldStream;
+use ark_ff::PrimeField;
+
+/// Helper: render a `FieldStream` as the boundary wire form — a
+/// JS array of base-10 decimal strings.
+fn stream_to_decimals(stream: &FieldStream) -> Vec<String> {
+    stream
+        .fields()
+        .iter()
+        .map(|f| f.into_bigint().to_string())
+        .collect()
+}
+
+/// Helper: parse a JS array of decimal strings back into a
+/// `FieldStream`. The arity is validated against the trait's
+/// `FIELD_COUNT` by the caller via `validate_structural` (or via
+/// `decode` itself, which rejects wrong arity).
+fn decimals_to_stream(decimals: Vec<String>) -> Result<FieldStream, JsError> {
+    let mut fields = Vec::with_capacity(decimals.len());
+    for (i, d) in decimals.iter().enumerate() {
+        if !d.bytes().all(|b| b.is_ascii_digit()) || d.is_empty() {
+            return Err(JsError::new(&format!(
+                "field {i}: must be a non-negative base-10 integer",
+            )));
+        }
+        let f = d
+            .parse::<crypto::babyjub::Fq>()
+            .map_err(|_| JsError::new(&format!("field {i}: parse error")))?;
+        fields.push(f);
+    }
+    Ok(FieldStream::from_vec(fields))
+}
+
+/// `text-utf8-v1` encoding-id, as a decimal string.
+///
+/// Constant — same value every call. Pinned in
+/// `specs/encodings/text-utf8-v1.md`. Useful for boundary tests and
+/// for any wire format that tags payloads with their encoding id.
+#[wasm_bindgen]
+pub fn text_utf8_v1_id() -> String {
+    text_utf8_v1::TextUtf8V1::id().into_bigint().to_string()
+}
+
+/// Encode UTF-8 bytes via `text-utf8-v1`. Returns the field stream as
+/// a JS array of decimal strings (always 9 elements).
+///
+/// Throws if `bytes` is longer than 248 bytes, or if `bytes` is not
+/// valid UTF-8.
+#[wasm_bindgen]
+pub fn text_utf8_v1_encode(bytes: &[u8]) -> Result<Vec<String>, JsError> {
+    let stream = text_utf8_v1::TextUtf8V1::encode(bytes)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(stream_to_decimals(&stream))
+}
+
+/// Decode a `text-utf8-v1` field stream back to its UTF-8 bytes.
+/// Input is a JS array of 9 decimal strings. Throws on any parse
+/// error, structural invalidity (wrong arity, oversized length
+/// prefix, chunk exceeds 31 bytes, non-zero padding past `f_0`), or
+/// semantic invalidity (decoded bytes are not valid UTF-8).
+#[wasm_bindgen]
+pub fn text_utf8_v1_decode(stream: Vec<String>) -> Result<Vec<u8>, JsError> {
+    let fs = decimals_to_stream(stream)?;
+    text_utf8_v1::TextUtf8V1::decode(&fs).map_err(|e| JsError::new(&e.to_string()))
+}
