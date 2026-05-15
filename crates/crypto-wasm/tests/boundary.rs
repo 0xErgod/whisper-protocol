@@ -26,7 +26,10 @@
 
 use wasm_bindgen_test::*;
 
-use crypto_wasm::{ecdh, generator, keypair_from_seed, mul_generator, validate_point};
+use crypto_wasm::{
+    ecdh, generator, keypair_from_seed, mul_generator, pedersen_commit, pedersen_h,
+    validate_point,
+};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -263,4 +266,61 @@ fn ecdh_rejects_invalid_inputs() {
         ecdh(&[0u8; 32], &g.x(), &g.y()).is_err(),
         "wrong seed length must error",
     );
+}
+
+// --- pedersen fixture (specs/babyjub-pedersen.md § Worked Example) -------
+
+/// `pedersen_h()` returns the spec's pinned `H`. Catches an `H`
+/// derivation drift end-to-end through the JS<->WASM edge.
+#[wasm_bindgen_test]
+fn pedersen_h_matches_spec() {
+    let h = pedersen_h();
+    assert_eq!(
+        h.x(),
+        "841592716755229802932648006577806087532565884664794707633999447952449024030",
+    );
+    assert_eq!(
+        h.y(),
+        "21165608275098473985804540174915770236470038226241417420449949757110115410790",
+    );
+}
+
+/// `pedersen_commit(1, 2)` — spec vector 1, driven through the boundary
+/// as decimal strings exactly as `apps/curve` will call it.
+#[wasm_bindgen_test]
+fn pedersen_commit_vector_1() {
+    let c = pedersen_commit("1", "2").expect("valid scalars");
+    assert_eq!(
+        c.x(),
+        "19911656000857052962597456184037789990217243984679140824149869840037557852443",
+    );
+    assert_eq!(
+        c.y(),
+        "34605269953567020705948092501852398380697724299788400696888085852242656086",
+    );
+}
+
+/// `pedersen_commit(85, 7)` — spec vector 5, the homomorphic-sum
+/// anchor. The TS-side panel will visualize `commit(42, 2) + commit(43,
+/// 5) == commit(85, 7)`; this test pins the right-hand-side.
+#[wasm_bindgen_test]
+fn pedersen_commit_vector_5() {
+    let c = pedersen_commit("85", "7").expect("valid scalars");
+    assert_eq!(
+        c.x(),
+        "6870881176262591255209957784559476352128178258958653506281010548778139552124",
+    );
+    assert_eq!(
+        c.y(),
+        "21358251945557300339181094850512781582761528410355366539487020884672487905717",
+    );
+}
+
+/// Malformed scalars come back as exceptions, not panics. The
+/// boundary's error contract for `pedersen_commit`.
+#[wasm_bindgen_test]
+fn pedersen_commit_rejects_garbage() {
+    assert!(pedersen_commit("abc", "2").is_err(), "garbage value must error");
+    assert!(pedersen_commit("1", "-3").is_err(), "negative blinding must error");
+    assert!(pedersen_commit("", "2").is_err(), "empty value must error");
 }

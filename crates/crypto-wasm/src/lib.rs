@@ -211,3 +211,39 @@ pub fn ecdh(my_seed: &[u8], peer_pk_x: &str, peer_pk_y: &str) -> Result<Point, J
     let shared = babyjub::shared_secret(&sk, &peer_pk);
     Ok(babyjub::point_to_strings(&shared).into())
 }
+
+/// Pedersen commitment over Baby Jubjub: `C = value · G + blinding · H`.
+///
+/// `value` and `blinding` are decimal-string scalars in `F_l`. The
+/// `babyjub-pedersen-v1` second generator `H` is fixed and pinned in
+/// `specs/babyjub-pedersen.md`; this binding does not let the JS caller
+/// supply a different `H`, deliberately — a wrong `H` would invalidate
+/// the binding property silently.
+///
+/// **The caller is responsible for `blinding`.** Reusing it across
+/// commitments to different values is a hiding-failure footgun
+/// (documented in the spec). This binding does not sample randomness;
+/// the JS-side caller should generate `blinding` via the browser's
+/// `crypto.getRandomValues` (or equivalent) and convert to a decimal
+/// string.
+///
+/// Returns the commitment point as decimal-string coordinates. A
+/// malformed scalar comes back as a JS exception, not a panic.
+#[wasm_bindgen]
+pub fn pedersen_commit(value: &str, blinding: &str) -> Result<Point, JsError> {
+    let v = babyjub::scalar_from_decimal(value)
+        .map_err(|e| JsError::new(&format!("value: {e}")))?;
+    let r = babyjub::scalar_from_decimal(blinding)
+        .map_err(|e| JsError::new(&format!("blinding: {e}")))?;
+    let c = babyjub::commit(v, r);
+    Ok(babyjub::point_to_strings(&c).into())
+}
+
+/// Expose the protocol's fixed Pedersen `H` generator. Useful for
+/// visualizations and audits that want to see `H` directly.
+/// `H` is constant — same on every call — and pinned in
+/// `specs/babyjub-pedersen.md`.
+#[wasm_bindgen]
+pub fn pedersen_h() -> Point {
+    babyjub::point_to_strings(&babyjub::h_generator()).into()
+}
