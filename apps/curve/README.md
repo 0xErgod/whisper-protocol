@@ -43,7 +43,6 @@ cargo install wasm-pack
 
 ## NOTE: the `apps/` directory
 
-`apps/` is the home for applications and demos built on the protocol. This is
-its first occupant. The existing `web/` app (the dApp demo) is intended to move
-here as `apps/web` — that migration is a `git mv` plus a workspace-path update,
-not done yet. New apps and demos go under `apps/`, not at the repo root.
+`apps/` is the home for applications and demos built on the protocol. Sibling
+to this one is `apps/protocol` — the dApp demo (formerly `web/`). New apps and
+demos go under `apps/`.

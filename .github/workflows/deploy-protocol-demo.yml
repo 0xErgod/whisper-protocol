@@ -1,9 +1,9 @@
-name: deploy-web
+name: deploy-protocol-demo
 
-# Builds the Whisper demo dApp and deploys it to GitHub Pages on every
-# push to main. The deployed dApp talks to public Sui testnet RPC, so
-# anyone with a Sui wallet can click through and use the demo without
-# any of our infrastructure.
+# Builds the protocol demo dApp (apps/protocol) and deploys it to
+# GitHub Pages on every push to main. The deployed dApp talks to
+# public Sui testnet RPC, so anyone with a Sui wallet can click
+# through and use the demo without any of our infrastructure.
 #
 # Pages source must be set to "GitHub Actions" in
 # Settings → Pages → Source for this workflow to actually publish.
@@ -58,18 +58,18 @@ jobs:
       - name: build sdk packages first
         run: pnpm -r --filter "./packages/*" run build
 
-      - name: build web with pages base path
+      - name: build protocol demo with pages base path
         env:
           # Tells vite.config.ts to emit `<script src="/whisper-protocol/...">`
           # so the bundle resolves correctly under the project-pages URL.
           VITE_PAGES_BASE: /whisper-protocol/
-        run: pnpm --filter whisper-web run build
+        run: pnpm --filter protocol-demo run build
 
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: web/dist
+          path: apps/protocol/dist
 
   deploy:
     needs: build
