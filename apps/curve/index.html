@@ -97,25 +97,29 @@
           <canvas id="stage-pedersen" width="420" height="420"></canvas>
           <aside>
             <p class="blurb">
-              two (value, blinding) pairs → three commitments. the protocol's
+              two streams of field elements + two blindings → three
+              commitments. the protocol's <em>element-wise</em>
               additive-homomorphism contract:
-              <code>C(a,r_a) + C(b,r_b) ≡ C(a+b, r_a+r_b)</code>. the third
-              point — labelled <code>C_a+b</code> — is computed via the
-              right-hand side; the left-hand side would equal it in the group
-              (point addition not shown here, but verified at the byte level
-              by the rust + wasm test suites).
+              <code>C(a, r_a) + C(b, r_b) ≡ C(a + b, r_a + r_b)</code>
+              where <code>a + b</code> is the element-wise sum. each
+              stream position has its own pinned generator
+              <code>G_i</code>, so a future ZK predicate can prove "the
+              i-th element is X" without touching the others. enter
+              streams as comma-separated decimals.
             </p>
             <div class="controls">
-              <label for="pedersen-value-a">value a</label>
-              <input id="pedersen-value-a" type="number" min="0" max="1000" value="42" />
-              <label for="pedersen-value-b">value b</label>
-              <input id="pedersen-value-b" type="number" min="0" max="1000" value="43" />
+              <label for="pedersen-stream-a">stream a</label>
+              <input id="pedersen-stream-a" type="text" value="10, 20, 30" />
+            </div>
+            <div class="controls">
+              <label for="pedersen-stream-b">stream b</label>
+              <input id="pedersen-stream-b" type="text" value="5, 15, 25" />
             </div>
             <div class="controls">
               <label for="pedersen-blinding-a">r_a</label>
-              <input id="pedersen-blinding-a" type="text" value="2" />
+              <input id="pedersen-blinding-a" type="text" value="100" />
               <label for="pedersen-blinding-b">r_b</label>
-              <input id="pedersen-blinding-b" type="text" value="5" />
+              <input id="pedersen-blinding-b" type="text" value="200" />
               <button id="pedersen-random">random r</button>
             </div>
             <div class="readout" id="readout-pedersen">initializing…</div>

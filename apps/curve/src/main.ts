@@ -9,9 +9,9 @@
  *  - `keypair-panel`   — 64-byte seed → public key
  *  - `ecdh-panel`      — Alice + Bob seeds → shared point (with the
  *                        symmetry property asserted visually)
- *  - `pedersen-panel`  — two (value, blinding) pairs → three
- *                        commitments showing the additive-homomorphism
- *                        property
+ *  - `pedersen-panel`  — two streams + two blindings → three vector
+ *                        Pedersen commitments showing the element-wise
+ *                        additive-homomorphism property
  *  - `schnorr-panel`   — sign a field-element message, plot PK + R,
  *                        verify in-page; tamper button to demo the
  *                        rejection path
@@ -57,8 +57,8 @@ setupEcdhPanel({
 
 setupPedersenPanel({
   canvas: document.getElementById("stage-pedersen") as HTMLCanvasElement,
-  valueA: document.getElementById("pedersen-value-a") as HTMLInputElement,
-  valueB: document.getElementById("pedersen-value-b") as HTMLInputElement,
+  streamA: document.getElementById("pedersen-stream-a") as HTMLInputElement,
+  streamB: document.getElementById("pedersen-stream-b") as HTMLInputElement,
   blindingA: document.getElementById("pedersen-blinding-a") as HTMLInputElement,
   blindingB: document.getElementById("pedersen-blinding-b") as HTMLInputElement,
   randomBtn: document.getElementById("pedersen-random") as HTMLButtonElement,
