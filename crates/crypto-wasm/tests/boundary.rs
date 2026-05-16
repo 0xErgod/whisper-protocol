@@ -27,9 +27,9 @@
 use wasm_bindgen_test::*;
 
 use crypto_wasm::{
-    ecdh, generator, keypair_from_seed, mul_generator, pedersen_commit, pedersen_g, pedersen_h,
-    poseidon_hash_fixed, poseidon_hash_sponge, schnorr_sign, schnorr_verify, text_utf8_v1_decode,
-    text_utf8_v1_encode, text_utf8_v1_id, validate_point,
+    ecdh, generator, kdf_derive, keypair_from_seed, mul_generator, pedersen_commit, pedersen_g,
+    pedersen_h, poseidon_hash_fixed, poseidon_hash_sponge, schnorr_sign, schnorr_verify,
+    text_utf8_v1_decode, text_utf8_v1_encode, text_utf8_v1_id, validate_point,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -812,5 +812,111 @@ fn poseidon_rejects_garbage() {
     );
     assert!(
         poseidon_hash_sponge(POSEIDON_FIXTURE_DOMAIN, vec!["-1".into()]).is_err()
+    );
+}
+
+// --- kdf fixture (specs/babyjub-kdf.md § Worked Example) ---------------
+
+/// Alice/Bob ECDH shared point — same as the ECDH spec's worked
+/// example. Reused here so the KDF fixture chains cleanly.
+const ALICE_BOB_SHARED_X: &str =
+    "4441722070262887487676852990759346353102280890264110527729805261601919952792";
+const ALICE_BOB_SHARED_Y: &str =
+    "18505774984025635106527431283405915983682689754171973024874112571296549171475";
+
+/// Pinned role tags from the spec, in decimal-string form.
+const ENC_ROLE_TAG: &str =
+    "1509687719585944131241352475068886393759608140501623646780323187386706626075";
+const MAC_ROLE_TAG: &str =
+    "5516219051016623209397290384142210256012461986142239137807233927652814454837";
+
+/// Vector 2: cipher key for envelope 42, byte-for-byte through the
+/// boundary. The canonical production-use case.
+#[wasm_bindgen_test]
+fn kdf_vector_2_cipher_key_envelope_42() {
+    let key = kdf_derive(
+        ALICE_BOB_SHARED_X,
+        ALICE_BOB_SHARED_Y,
+        vec![ENC_ROLE_TAG.into(), "42".into()],
+    )
+    .expect("valid inputs");
+    assert_eq!(
+        key,
+        "9799522521534548758133939899702695884003167902663631833387651174524282263857",
+    );
+}
+
+/// Vector 3: MAC key for envelope 42. The cross-construction
+/// differentiator at the boundary — same shared point and envelope
+/// id as vector 2, only the role tag differs, but the key MUST
+/// differ.
+#[wasm_bindgen_test]
+fn kdf_vector_3_mac_key_envelope_42() {
+    let key = kdf_derive(
+        ALICE_BOB_SHARED_X,
+        ALICE_BOB_SHARED_Y,
+        vec![MAC_ROLE_TAG.into(), "42".into()],
+    )
+    .expect("valid inputs");
+    assert_eq!(
+        key,
+        "5302105009719633730025155498822445041452574923386899996802294480945238328306",
+    );
+}
+
+/// Cipher and MAC keys for the same envelope MUST differ. Pins the
+/// role-separation property at the boundary.
+#[wasm_bindgen_test]
+fn kdf_cipher_and_mac_keys_for_same_envelope_differ() {
+    let k_enc = kdf_derive(
+        ALICE_BOB_SHARED_X,
+        ALICE_BOB_SHARED_Y,
+        vec![ENC_ROLE_TAG.into(), "42".into()],
+    )
+    .expect("ok");
+    let k_mac = kdf_derive(
+        ALICE_BOB_SHARED_X,
+        ALICE_BOB_SHARED_Y,
+        vec![MAC_ROLE_TAG.into(), "42".into()],
+    )
+    .expect("ok");
+    assert_ne!(k_enc, k_mac, "cipher and MAC keys MUST differ");
+}
+
+/// Empty context is valid; produces a per-shared-point constant.
+#[wasm_bindgen_test]
+fn kdf_empty_context_works() {
+    let key = kdf_derive(ALICE_BOB_SHARED_X, ALICE_BOB_SHARED_Y, vec![]).expect("ok");
+    assert_eq!(
+        key,
+        "17636122932579740171900542371485785762200772773883779227467254854068102551698",
+    );
+}
+
+/// Boundary error contract: bad shared point, garbage context, and
+/// over-length context all throw rather than silently producing a
+/// wrong key.
+#[wasm_bindgen_test]
+fn kdf_rejects_invalid_inputs() {
+    // Off-curve shared point.
+    assert!(
+        kdf_derive("1", "1", vec![]).is_err(),
+        "off-curve shared point must throw",
+    );
+    // Garbage shared coordinate.
+    assert!(
+        kdf_derive("abc", ALICE_BOB_SHARED_Y, vec![]).is_err(),
+        "garbage shared coord must throw",
+    );
+    // Garbage context element.
+    assert!(
+        kdf_derive(ALICE_BOB_SHARED_X, ALICE_BOB_SHARED_Y, vec!["abc".into()]).is_err(),
+        "garbage context element must throw",
+    );
+    // Over-length context.
+    let too_long: Vec<String> = (1u64..=10).map(|i| i.to_string()).collect();
+    assert!(
+        kdf_derive(ALICE_BOB_SHARED_X, ALICE_BOB_SHARED_Y, too_long).is_err(),
+        "10-element context must throw",
     );
 }

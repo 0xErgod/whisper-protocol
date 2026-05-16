@@ -554,3 +554,35 @@ pub fn poseidon_hash_sponge(
     let h = crypto::poseidon::poseidon_hash_sponge(d, &fields);
     Ok(h.into_bigint().to_string())
 }
+
+/// Derive one field element of key material from a shared ECDH point
+/// and a context. See `specs/babyjub-kdf.md`.
+///
+/// `shared_x` and `shared_y` are decimal-string coordinates of the
+/// shared point; they MUST be on-curve and in the prime-order
+/// subgroup (the wire decoder enforces this — a wrong point throws
+/// before any KDF math runs). `context` is a JS array of decimal-
+/// string field elements (length 0..9).
+///
+/// Returns the derived key as a decimal-string field element. A
+/// malformed input or over-length context throws a JS exception,
+/// distinguishing "broken input" from valid use.
+///
+/// **Protocol use:** call once per role that needs its own key,
+/// with the role tag as the first context element. See the spec for
+/// the canonical ENC/MAC role-tag pair.
+#[wasm_bindgen]
+pub fn kdf_derive(
+    shared_x: &str,
+    shared_y: &str,
+    context: Vec<String>,
+) -> Result<String, JsError> {
+    use ark_ff::PrimeField;
+
+    let shared = babyjub::point_from_strings(shared_x, shared_y)
+        .map_err(|e| JsError::new(&format!("shared: {e}")))?;
+    let ctx_fields = decimals_to_fields(context)?;
+    let key = crypto::babyjub::kdf_derive(&shared, &ctx_fields)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(key.into_bigint().to_string())
+}
