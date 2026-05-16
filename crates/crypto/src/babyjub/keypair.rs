@@ -110,11 +110,16 @@ impl core::fmt::Debug for Seed {
 pub struct SecretKey(Fr);
 
 impl SecretKey {
-    /// Borrow the scalar for in-crate use — e.g. ECDH scalar mul, future
-    /// signature nonce construction. Deliberately `pub(crate)`: external
-    /// callers should compose at the `keypair` / `public_key` level, not by
-    /// poking the raw scalar. The first reader is `babyjub::ecdh`.
-    pub(crate) fn scalar(&self) -> &Fr {
+    /// Borrow the scalar.
+    ///
+    /// **Use sparingly.** External callers should compose at the `keypair`
+    /// / `public_key` level, not by poking the raw scalar — that's why
+    /// the `SecretKey` newtype exists. The accessor is `pub` because the
+    /// `gadgets` crate (a legitimate in-workspace consumer) needs the raw
+    /// `Fr` to feed it into a circuit witness, and a `pub(crate)`
+    /// restriction would force a redundant unwrap-and-rewrap dance there.
+    /// Application code reaching for this is almost certainly a code smell.
+    pub fn scalar(&self) -> &Fr {
         &self.0
     }
 }
