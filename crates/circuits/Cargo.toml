@@ -27,5 +27,18 @@ ark-r1cs-std = "0.5"
 # Baby Jubjub scalar field.
 ark-ed-on-bn254 = "0.5"
 
+# Wire-form input deserialization. Each circuit ships an `Inputs`
+# struct (decimal-string-shaped, JSON-friendly) that the
+# prover-server's HTTP handler and the prover-wasm binding both
+# consume. The struct lives next to the circuit so both transports
+# pick up I/O changes in one place.
+serde = { version = "1", features = ["derive"] }
+# Typed errors for the wire-form parsing layer.
+thiserror = "1"
+
 [dev-dependencies]
 ark-std = { version = "0.5", features = ["std"] }
+# JSON for the wire-form round-trip test. Production callers
+# (prover-server, prover-wasm) pull serde_json themselves; the
+# circuits crate stays serde-only for the I/O struct definitions.
+serde_json = "1"

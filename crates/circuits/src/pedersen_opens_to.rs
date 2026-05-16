@@ -77,7 +77,7 @@ pub const STREAM_LEN: usize = 9;
 /// **Private** fields are the witness: the full stream and the
 /// blinding scalar. Both are `Option`s so the setup path can pass
 /// `None`-style dummies via `empty()`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PedersenOpensTo {
     // --- public inputs ---
     /// Commitment x-coordinate. Public.
@@ -197,6 +197,200 @@ impl ConstraintSynthesizer<Fq> for PedersenOpensTo {
 
         Ok(())
     }
+}
+
+// --- wire-form inputs --------------------------------------------------
+//
+// The struct below is the JSON-shaped twin of `PedersenOpensTo::new`'s
+// argument list. It lives next to the circuit (not in `prover-server` or
+// `prover-wasm`) so the two transport crates pick up I/O changes in one
+// place. Field elements cross as base-10 decimal strings — same convention
+// `crates/crypto-wasm` already uses at the boundary.
+
+/// Wire-form inputs for the `pedersen_opens_to` circuit.
+///
+/// Field elements are base-10 decimal strings. The shape mirrors
+/// `PedersenOpensTo::new`: three public inputs (the commitment and
+/// the claimed first value) plus two witnesses (the stream and the
+/// blinding).
+///
+/// This struct is consumed by:
+///
+/// - **`prover-server`** — deserialized from the HTTP request body.
+/// - **`prover-wasm`** — deserialized from a JSON string the JS
+///   caller hands in.
+///
+/// Both transports parse, validate via [`TryFrom`], call
+/// `prover::prove`, and return the proof bytes. They do not
+/// re-define this shape; if the I/O contract changes, this is the
+/// one place to change it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PedersenOpensToInputs {
+    /// Commitment x-coordinate, decimal string.
+    pub commitment_x: String,
+    /// Commitment y-coordinate, decimal string.
+    pub commitment_y: String,
+    /// The value the prover claims `stream[0]` equals, decimal string.
+    pub claimed_first_value: String,
+    /// The committed stream, exactly `STREAM_LEN` decimal strings.
+    pub stream: [String; STREAM_LEN],
+    /// The Pedersen blinding scalar, decimal string in `Fr`.
+    pub blinding: String,
+}
+
+/// Errors from parsing wire-form inputs into a typed circuit
+/// instance. Each variant pins one boundary failure mode so the
+/// HTTP / WASM caller can surface a useful message.
+#[derive(Debug, thiserror::Error)]
+pub enum InputsError {
+    /// A field-element decimal string failed to parse. The
+    /// `field` names the offending input slot.
+    #[error("field {field}: not a non-negative base-10 integer")]
+    BadFieldDecimal { field: &'static str },
+
+    /// A scalar (in `Fr`) decimal string failed to parse.
+    #[error("scalar {field}: not a non-negative base-10 integer")]
+    BadScalarDecimal { field: &'static str },
+
+    /// A point's coordinates pair, taken together, does not land
+    /// on the Baby Jubjub curve or in the prime-order subgroup.
+    /// The wire decoder enforces this so off-curve / small-
+    /// subgroup commitments are rejected before any circuit math
+    /// runs.
+    #[error("commitment: not a valid Baby Jubjub point: {0}")]
+    InvalidCommitment(String),
+}
+
+/// Parse a base-10 decimal string into an `Fq` element. Rejects
+/// negative signs, empty strings, or non-digit characters —
+/// matching the convention `crates/crypto-wasm` already pins.
+fn parse_fq(s: &str, field: &'static str) -> Result<Fq, InputsError> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(InputsError::BadFieldDecimal { field });
+    }
+    s.parse::<Fq>()
+        .map_err(|_| InputsError::BadFieldDecimal { field })
+}
+
+/// Parse a base-10 decimal string into an `Fr` (scalar field)
+/// element. Same digit-shape gate as `parse_fq`.
+fn parse_fr(s: &str, field: &'static str) -> Result<Fr, InputsError> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(InputsError::BadScalarDecimal { field });
+    }
+    s.parse::<Fr>()
+        .map_err(|_| InputsError::BadScalarDecimal { field })
+}
+
+impl TryFrom<PedersenOpensToInputs> for PedersenOpensTo {
+    type Error = InputsError;
+
+    fn try_from(i: PedersenOpensToInputs) -> Result<Self, Self::Error> {
+        // Parse and validate the commitment as a real curve point
+        // through the existing wire decoder. Off-curve and small-
+        // subgroup inputs come back as typed errors; the gadget
+        // does NOT re-validate, so this is the security-relevant
+        // gate.
+        let commitment = crypto::babyjub::point_from_strings(
+            &i.commitment_x,
+            &i.commitment_y,
+        )
+        .map_err(|e| InputsError::InvalidCommitment(e.to_string()))?;
+
+        // Parse the public claimed_first_value.
+        let claimed_first_value = parse_fq(&i.claimed_first_value, "claimed_first_value")?;
+
+        // Parse the stream witnesses. Stable error attribution by
+        // synthesizing a `stream[i]` field name; this needs a
+        // small leak to `&'static str` via `Box::leak`. The leak
+        // is one-shot per malformed input and the boundary is the
+        // failure path, so the cost is fine.
+        let mut stream_fq: Vec<Fq> = Vec::with_capacity(STREAM_LEN);
+        for (idx, s) in i.stream.iter().enumerate() {
+            // Stable field name "stream[N]" without allocation:
+            // we need a `'static` lifetime for the error variant,
+            // and the index is bounded by STREAM_LEN so we can
+            // use a const lookup table.
+            let field_name = stream_field_name(idx);
+            stream_fq.push(parse_fq(s, field_name)?);
+        }
+        let stream: [Fq; STREAM_LEN] = stream_fq
+            .try_into()
+            .expect("STREAM_LEN elements pushed above");
+
+        // Parse the blinding scalar.
+        let blinding = parse_fr(&i.blinding, "blinding")?;
+
+        Ok(PedersenOpensTo::new(
+            commitment,
+            claimed_first_value,
+            stream,
+            blinding,
+        ))
+    }
+}
+
+/// Static `&'static str` names for each `stream[i]` slot. Lets
+/// `InputsError::BadFieldDecimal` carry a stable field-attribution
+/// string without leaking heap allocations on the failure path.
+const STREAM_FIELD_NAMES: [&str; STREAM_LEN] = [
+    "stream[0]",
+    "stream[1]",
+    "stream[2]",
+    "stream[3]",
+    "stream[4]",
+    "stream[5]",
+    "stream[6]",
+    "stream[7]",
+    "stream[8]",
+];
+
+fn stream_field_name(idx: usize) -> &'static str {
+    STREAM_FIELD_NAMES[idx]
+}
+
+/// Extract the verifier-side public-input vector from
+/// `PedersenOpensToInputs` *without* building the full circuit.
+/// Used by the HTTP / WASM verify paths where the caller has the
+/// proof + public inputs but no witness.
+///
+/// Returns the inputs in the order the circuit's
+/// `generate_constraints` allocates them: `[commitment_x,
+/// commitment_y, claimed_first_value]`. A verifier that calls
+/// `prover::verify(vk, &public_inputs, &proof)` MUST consume this
+/// exact ordering.
+///
+/// **Subset shape.** Takes a separate `PedersenOpensToPublicInputs`
+/// struct rather than the full witness-bearing `Inputs` — the
+/// verifier doesn't have the witness, so requiring it would force
+/// callers to fabricate dummy values.
+pub fn public_inputs_from(
+    p: &PedersenOpensToPublicInputs,
+) -> Result<Vec<Fq>, InputsError> {
+    // Re-validate the commitment at the verifier boundary too —
+    // an attacker who controls the wire could feed a malformed
+    // pair, and we want the typed error rather than a panic in
+    // arkworks' internals.
+    let _ = crypto::babyjub::point_from_strings(&p.commitment_x, &p.commitment_y)
+        .map_err(|e| InputsError::InvalidCommitment(e.to_string()))?;
+
+    let cx = parse_fq(&p.commitment_x, "commitment_x")?;
+    let cy = parse_fq(&p.commitment_y, "commitment_y")?;
+    let cv = parse_fq(&p.claimed_first_value, "claimed_first_value")?;
+    Ok(vec![cx, cy, cv])
+}
+
+/// Public-input-only subset of [`PedersenOpensToInputs`]. The
+/// shape the verifier consumes: no witness, just what the
+/// commitment and the claim look like on the wire.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PedersenOpensToPublicInputs {
+    /// Commitment x-coordinate, decimal string.
+    pub commitment_x: String,
+    /// Commitment y-coordinate, decimal string.
+    pub commitment_y: String,
+    /// The value the prover claims `stream[0]` equals, decimal string.
+    pub claimed_first_value: String,
 }
 
 #[cfg(test)]
@@ -321,5 +515,149 @@ mod tests {
         let cs = ConstraintSystem::<Fq>::new_ref();
         PedersenOpensTo::empty().generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
+    }
+
+    // --- wire-form input tests --------------------------------------
+
+    /// Round-trip an honest fixture through the wire form:
+    /// JSON-shape inputs → `TryFrom` → typed circuit → satisfied
+    /// constraint system. The load-bearing test for the parsing
+    /// layer.
+    #[test]
+    fn inputs_try_from_builds_satisfiable_circuit() {
+        use ark_ff::PrimeField;
+
+        let stream: [Fq; STREAM_LEN] = [
+            Fq::from(10u64),
+            Fq::from(20u64),
+            Fq::from(30u64),
+            Fq::from(40u64),
+            Fq::from(50u64),
+            Fq::from(60u64),
+            Fq::from(70u64),
+            Fq::from(80u64),
+            Fq::from(90u64),
+        ];
+        let blinding = Fr::from(12345u64);
+        let commitment = native_commit(&stream, blinding);
+
+        let inputs = PedersenOpensToInputs {
+            commitment_x: commitment.x.into_bigint().to_string(),
+            commitment_y: commitment.y.into_bigint().to_string(),
+            claimed_first_value: stream[0].into_bigint().to_string(),
+            stream: [
+                stream[0].into_bigint().to_string(),
+                stream[1].into_bigint().to_string(),
+                stream[2].into_bigint().to_string(),
+                stream[3].into_bigint().to_string(),
+                stream[4].into_bigint().to_string(),
+                stream[5].into_bigint().to_string(),
+                stream[6].into_bigint().to_string(),
+                stream[7].into_bigint().to_string(),
+                stream[8].into_bigint().to_string(),
+            ],
+            blinding: {
+                use ark_ff::PrimeField;
+                blinding.into_bigint().to_string()
+            },
+        };
+
+        let circuit: PedersenOpensTo = inputs.try_into().expect("parse ok");
+        let cs = ConstraintSystem::<Fq>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    /// A garbage commitment coordinate gets caught at the wire
+    /// decoder, before any circuit math runs. Surfaces as
+    /// `InvalidCommitment`.
+    #[test]
+    fn inputs_try_from_rejects_off_curve_commitment() {
+        let inputs = PedersenOpensToInputs {
+            commitment_x: "1".to_string(),
+            commitment_y: "1".to_string(), // not on Baby Jubjub
+            claimed_first_value: "10".to_string(),
+            stream: std::array::from_fn(|_| "0".to_string()),
+            blinding: "1".to_string(),
+        };
+        let result: Result<PedersenOpensTo, _> = inputs.try_into();
+        assert!(matches!(result, Err(InputsError::InvalidCommitment(_))));
+    }
+
+    /// A non-decimal string in the stream MUST come back as
+    /// `BadFieldDecimal`, naming the specific slot that failed.
+    #[test]
+    fn inputs_try_from_rejects_bad_stream_decimal() {
+        // Need a valid commitment so we get past the wire decoder
+        // and into the stream-parsing layer.
+        let stream: [Fq; STREAM_LEN] = [Fq::from(0u64); STREAM_LEN];
+        let commitment = native_commit(&stream, Fr::from(1u64));
+        use ark_ff::PrimeField;
+
+        let mut stream_wire: [String; STREAM_LEN] =
+            std::array::from_fn(|_| "0".to_string());
+        stream_wire[3] = "not-a-number".to_string();
+
+        let inputs = PedersenOpensToInputs {
+            commitment_x: commitment.x.into_bigint().to_string(),
+            commitment_y: commitment.y.into_bigint().to_string(),
+            claimed_first_value: "0".to_string(),
+            stream: stream_wire,
+            blinding: "1".to_string(),
+        };
+        let result: Result<PedersenOpensTo, _> = inputs.try_into();
+        match result {
+            Err(InputsError::BadFieldDecimal { field }) => {
+                assert_eq!(field, "stream[3]");
+            }
+            other => panic!("expected BadFieldDecimal {{ field: stream[3] }}, got {other:?}"),
+        }
+    }
+
+    /// `public_inputs_from` extracts the verifier-side input
+    /// vector in the exact order the circuit allocates them:
+    /// `[commitment_x, commitment_y, claimed_first_value]`.
+    /// Pins the verifier interface from the wire form.
+    #[test]
+    fn public_inputs_from_returns_inputs_in_circuit_order() {
+        use ark_ff::PrimeField;
+
+        let stream: [Fq; STREAM_LEN] = [Fq::from(10u64); STREAM_LEN];
+        let commitment = native_commit(&stream, Fr::from(7u64));
+        let public = PedersenOpensToPublicInputs {
+            commitment_x: commitment.x.into_bigint().to_string(),
+            commitment_y: commitment.y.into_bigint().to_string(),
+            claimed_first_value: "10".to_string(),
+        };
+
+        let public_inputs = public_inputs_from(&public).expect("ok");
+        assert_eq!(public_inputs.len(), 3);
+        assert_eq!(public_inputs[0], commitment.x);
+        assert_eq!(public_inputs[1], commitment.y);
+        assert_eq!(public_inputs[2], Fq::from(10u64));
+    }
+
+    /// JSON round-trip: serialize an `Inputs`, deserialize it
+    /// back, the result deserialized identical. Pins the
+    /// wire format the HTTP and WASM transports will marshal
+    /// in/out of.
+    #[test]
+    fn inputs_json_roundtrip() {
+        let inputs = PedersenOpensToInputs {
+            commitment_x: "1".to_string(),
+            commitment_y: "2".to_string(),
+            claimed_first_value: "3".to_string(),
+            stream: std::array::from_fn(|i| (i as u64).to_string()),
+            blinding: "42".to_string(),
+        };
+
+        let json = serde_json::to_string(&inputs).expect("ser");
+        let back: PedersenOpensToInputs = serde_json::from_str(&json).expect("deser");
+
+        assert_eq!(back.commitment_x, inputs.commitment_x);
+        assert_eq!(back.commitment_y, inputs.commitment_y);
+        assert_eq!(back.claimed_first_value, inputs.claimed_first_value);
+        assert_eq!(back.stream, inputs.stream);
+        assert_eq!(back.blinding, inputs.blinding);
     }
 }
