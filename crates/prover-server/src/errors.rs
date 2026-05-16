@@ -25,6 +25,15 @@ pub enum ServerError {
     #[error("invalid inputs: {0}")]
     BadInputs(#[from] circuits::pedersen_opens_to::InputsError),
 
+    /// Same shape but for the envelope-open circuit. Kept as a
+    /// separate variant rather than a generic "any circuit's
+    /// InputsError" because circuit InputsError types are
+    /// different concrete enums (different invalid-input
+    /// failure modes per circuit), and the HTTP boundary
+    /// surface is clearer when each one is named.
+    #[error("invalid envelope-open inputs: {0}")]
+    BadEnvelopeOpenInputs(#[from] circuits::envelope_open_at_0::InputsError),
+
     /// The proof bytes in a verify request failed to decode.
     /// 400.
     #[error("invalid proof bytes: {0}")]
@@ -45,7 +54,9 @@ impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             ServerError::UnknownCircuit(_) => (StatusCode::NOT_FOUND, self.to_string()),
-            ServerError::BadInputs(_) | ServerError::BadProofBytes(_) => {
+            ServerError::BadInputs(_)
+            | ServerError::BadEnvelopeOpenInputs(_)
+            | ServerError::BadProofBytes(_) => {
                 (StatusCode::BAD_REQUEST, self.to_string())
             }
             ServerError::Prover(_) | ServerError::Internal(_) => {

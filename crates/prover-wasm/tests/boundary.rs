@@ -27,7 +27,10 @@
 
 use wasm_bindgen_test::*;
 
-use prover_wasm::{prove_pedersen_opens_to, verify_pedersen_opens_to};
+use prover_wasm::{
+    prove_envelope_open_at_0, prove_pedersen_opens_to, verify_envelope_open_at_0,
+    verify_pedersen_opens_to,
+};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -119,6 +122,73 @@ fn prove_rejects_off_curve_commitment() {
         "blinding": "1"
     }"#;
     assert!(prove_pedersen_opens_to(off_curve, PK_BYTES).is_err());
+}
+
+// =====================================================================
+// envelope_open_at_0 boundary
+// =====================================================================
+
+const ENV_PK_BYTES: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/test_fixtures/envelope_open_at_0.pk"
+));
+const ENV_VK_BYTES: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/test_fixtures/envelope_open_at_0.vk"
+));
+const ENV_PROOF_BYTES: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/test_fixtures/envelope_open_at_0.proof"
+));
+const ENV_INPUTS_JSON: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/test_fixtures/envelope_open_at_0.inputs.json"
+));
+const ENV_PUBLIC_JSON: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/test_fixtures/envelope_open_at_0.public.json"
+));
+
+/// Verify the pre-computed envelope-open proof across the
+/// boundary. Pure-verify path — no prove math in the browser.
+#[wasm_bindgen_test]
+fn envelope_verify_honest_proof_accepts() {
+    let accepted = verify_envelope_open_at_0(ENV_PUBLIC_JSON, ENV_PROOF_BYTES, ENV_VK_BYTES)
+        .expect("verify ok");
+    assert!(accepted, "honest envelope proof must verify across boundary");
+}
+
+/// Tampering with the public claimed_value MUST reject. The
+/// integrity property at the boundary for the envelope circuit.
+#[wasm_bindgen_test]
+fn envelope_verify_rejects_tampered_claimed_value() {
+    let tampered = format!(
+        r#"{{"signal":"{sig}","claimed_value":"99"}}"#,
+        sig = parse_field(ENV_PUBLIC_JSON, "signal"),
+    );
+    let accepted = verify_envelope_open_at_0(&tampered, ENV_PROOF_BYTES, ENV_VK_BYTES)
+        .expect("verify ok");
+    assert!(!accepted, "tampered claimed_value must NOT verify");
+}
+
+/// End-to-end across the boundary: prove + verify in the
+/// browser. Heaviest test for this circuit, ~20s release.
+#[wasm_bindgen_test]
+fn envelope_prove_then_verify_roundtrips() {
+    let proof_bytes = prove_envelope_open_at_0(ENV_INPUTS_JSON, ENV_PK_BYTES)
+        .expect("prove ok");
+    assert!(!proof_bytes.is_empty(), "proof bytes non-empty");
+
+    let accepted = verify_envelope_open_at_0(ENV_PUBLIC_JSON, &proof_bytes, ENV_VK_BYTES)
+        .expect("verify ok");
+    assert!(accepted, "wasm-minted envelope proof must verify");
+}
+
+/// Malformed inputs JSON throws (not panics) at the wasm
+/// boundary.
+#[wasm_bindgen_test]
+fn envelope_prove_rejects_malformed_inputs_json() {
+    assert!(prove_envelope_open_at_0("not json", ENV_PK_BYTES).is_err());
 }
 
 /// Tiny helper: pull a string-valued field out of a small JSON

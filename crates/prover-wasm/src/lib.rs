@@ -57,6 +57,10 @@
 
 use wasm_bindgen::prelude::*;
 
+use circuits::envelope_open_at_0::{
+    public_inputs_from as envelope_open_public_inputs_from, EnvelopeOpenAt0,
+    EnvelopeOpenAt0Inputs, EnvelopeOpenAt0PublicInputs,
+};
 use circuits::pedersen_opens_to::{
     public_inputs_from as pedersen_public_inputs_from, PedersenOpensTo,
     PedersenOpensToInputs, PedersenOpensToPublicInputs,
@@ -161,4 +165,56 @@ fn ark_rng_for_wasm() -> Result<impl ark_std::rand::RngCore + ark_std::rand::Cry
     getrandom::getrandom(&mut seed)
         .map_err(|e| JsError::new(&format!("getrandom: {e}")))?;
     Ok(ark_std::rand::rngs::StdRng::from_seed(seed))
+}
+
+// =====================================================================
+// envelope_open_at_0
+// =====================================================================
+
+/// Generate a Groth16 proof for the `envelope_open_at_0`
+/// circuit. Shape mirrors [`prove_pedersen_opens_to`]:
+/// JSON inputs + PK bytes in, proof bytes out.
+#[wasm_bindgen]
+pub fn prove_envelope_open_at_0(
+    inputs_json: &str,
+    pk_bytes: &[u8],
+) -> Result<Vec<u8>, JsError> {
+    let inputs: EnvelopeOpenAt0Inputs = serde_json::from_str(inputs_json)
+        .map_err(|e| JsError::new(&format!("inputs json: {e}")))?;
+
+    let circuit: EnvelopeOpenAt0 = inputs
+        .try_into()
+        .map_err(|e: circuits::envelope_open_at_0::InputsError| {
+            JsError::new(&e.to_string())
+        })?;
+
+    let pk = deserialize_pk(pk_bytes)
+        .map_err(|e| JsError::new(&format!("pk decode: {e}")))?;
+
+    let mut rng = ark_rng_for_wasm()?;
+    let proof = prove(circuit, &pk, &mut rng).map_err(|e| JsError::new(&e.to_string()))?;
+    let bytes = serialize_proof(&proof).map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(bytes)
+}
+
+/// Verify a Groth16 proof for the `envelope_open_at_0` circuit.
+#[wasm_bindgen]
+pub fn verify_envelope_open_at_0(
+    public_inputs_json: &str,
+    proof_bytes: &[u8],
+    vk_bytes: &[u8],
+) -> Result<bool, JsError> {
+    let public: EnvelopeOpenAt0PublicInputs = serde_json::from_str(public_inputs_json)
+        .map_err(|e| JsError::new(&format!("public_inputs json: {e}")))?;
+
+    let public_inputs = envelope_open_public_inputs_from(&public)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let proof = deserialize_proof(proof_bytes)
+        .map_err(|e| JsError::new(&format!("proof decode: {e}")))?;
+    let vk = deserialize_vk(vk_bytes)
+        .map_err(|e| JsError::new(&format!("vk decode: {e}")))?;
+
+    let accepted = verify(&vk, &public_inputs, &proof).map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(accepted)
 }

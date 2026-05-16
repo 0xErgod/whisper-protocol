@@ -28,6 +28,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use circuits::envelope_open_at_0::{
+    public_inputs_from as envelope_open_public_inputs_from, EnvelopeOpenAt0,
+    EnvelopeOpenAt0Inputs, EnvelopeOpenAt0PublicInputs,
+};
 use circuits::pedersen_opens_to::{
     public_inputs_from as pedersen_public_inputs_from,
     PedersenOpensTo, PedersenOpensToInputs, PedersenOpensToPublicInputs,
@@ -51,6 +55,7 @@ pub struct AppState {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(pedersen_opens_to_routes())
+        .merge(envelope_open_at_0_routes())
         .with_state(state)
 }
 
@@ -154,6 +159,88 @@ async fn verify_pedersen_opens_to(
         .ok_or_else(|| ServerError::UnknownCircuit("pedersen_opens_to".to_string()))?;
 
     let public_inputs = pedersen_public_inputs_from(&req.public_inputs)?;
+
+    let proof_bytes = hex::decode(&req.proof_hex)
+        .map_err(|e| ServerError::BadProofBytes(e.to_string()))?;
+    let proof = deserialize_proof(&proof_bytes)
+        .map_err(|e| ServerError::BadProofBytes(e.to_string()))?;
+
+    let accepted = verify(&keys.vk, &public_inputs, &proof)?;
+    Ok(Json(VerifyResponse { accepted }))
+}
+
+// =====================================================================
+// envelope_open_at_0 handlers
+// =====================================================================
+
+fn envelope_open_at_0_routes() -> Router<AppState> {
+    Router::new()
+        .route("/prove/envelope_open_at_0", post(prove_envelope_open_at_0))
+        .route("/vk/envelope_open_at_0", get(vk_envelope_open_at_0))
+        .route(
+            "/verify/envelope_open_at_0",
+            post(verify_envelope_open_at_0),
+        )
+}
+
+/// `POST /prove/envelope_open_at_0`
+///
+/// Body: `EnvelopeOpenAt0Inputs` JSON.
+/// Response: proof bytes, `application/octet-stream`.
+async fn prove_envelope_open_at_0(
+    State(state): State<AppState>,
+    Json(inputs): Json<EnvelopeOpenAt0Inputs>,
+) -> ServerResult<impl IntoResponse> {
+    let keys = state.registry.get("envelope_open_at_0").ok_or_else(|| {
+        ServerError::UnknownCircuit("envelope_open_at_0".to_string())
+    })?;
+
+    let circuit: EnvelopeOpenAt0 = inputs.try_into()?;
+
+    let mut rng = rand::rngs::OsRng;
+    let proof = prove(circuit, &keys.pk, &mut rng)?;
+
+    let bytes = serialize_proof(&proof)?;
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    ))
+}
+
+/// `GET /vk/envelope_open_at_0`
+async fn vk_envelope_open_at_0(
+    State(state): State<AppState>,
+) -> ServerResult<impl IntoResponse> {
+    let keys = state.registry.get("envelope_open_at_0").ok_or_else(|| {
+        ServerError::UnknownCircuit("envelope_open_at_0".to_string())
+    })?;
+    let bytes = serialize_vk(&keys.vk)?;
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    ))
+}
+
+/// Verify-request body shape for `envelope_open_at_0`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EnvelopeOpenAt0VerifyRequest {
+    pub public_inputs: EnvelopeOpenAt0PublicInputs,
+    /// Hex-encoded proof bytes (no 0x prefix).
+    pub proof_hex: String,
+}
+
+/// `POST /verify/envelope_open_at_0`
+async fn verify_envelope_open_at_0(
+    State(state): State<AppState>,
+    Json(req): Json<EnvelopeOpenAt0VerifyRequest>,
+) -> ServerResult<Json<VerifyResponse>> {
+    let keys = state.registry.get("envelope_open_at_0").ok_or_else(|| {
+        ServerError::UnknownCircuit("envelope_open_at_0".to_string())
+    })?;
+
+    let public_inputs = envelope_open_public_inputs_from(&req.public_inputs)?;
 
     let proof_bytes = hex::decode(&req.proof_hex)
         .map_err(|e| ServerError::BadProofBytes(e.to_string()))?;

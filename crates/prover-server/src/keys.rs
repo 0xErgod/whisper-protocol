@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use ark_std::rand::SeedableRng;
 use ark_std::rand::rngs::StdRng;
+use circuits::envelope_open_at_0::EnvelopeOpenAt0;
 use circuits::pedersen_opens_to::PedersenOpensTo;
 use prover::{
     deserialize_pk, deserialize_vk, serialize_pk, serialize_vk, setup,
@@ -84,6 +85,10 @@ pub fn build(keys_dir: &Path) -> std::io::Result<Registry> {
     let pedersen_keys = load_or_setup_pedersen_opens_to(keys_dir)?;
     inner.insert("pedersen_opens_to", pedersen_keys);
 
+    // --- envelope_open_at_0 ---
+    let envelope_keys = load_or_setup_envelope_open_at_0(keys_dir)?;
+    inner.insert("envelope_open_at_0", envelope_keys);
+
     Ok(Registry { inner })
 }
 
@@ -122,6 +127,59 @@ fn load_or_setup_pedersen_opens_to(
         .map_err(|e| io_err(format!("pedersen_opens_to PK ser: {e}")))?;
     let vk_bytes = serialize_vk(&vk)
         .map_err(|e| io_err(format!("pedersen_opens_to VK ser: {e}")))?;
+    fs::write(&pk_path, &pk_bytes)?;
+    fs::write(&vk_path, &vk_bytes)?;
+    println!(
+        "[keys] wrote {} ({} bytes) and {} ({} bytes)",
+        pk_path.display(),
+        pk_bytes.len(),
+        vk_path.display(),
+        vk_bytes.len(),
+    );
+
+    Ok(CircuitKeys {
+        pk: Arc::new(pk),
+        vk,
+    })
+}
+
+/// Load `envelope_open_at_0` keys from disk, or run setup if
+/// missing. Same shape as `load_or_setup_pedersen_opens_to`;
+/// the duplication is intentional per Plan B until a third
+/// circuit motivates the trait extraction.
+fn load_or_setup_envelope_open_at_0(
+    keys_dir: &Path,
+) -> std::io::Result<CircuitKeys> {
+    let pk_path = keys_dir.join("envelope_open_at_0.pk");
+    let vk_path = keys_dir.join("envelope_open_at_0.vk");
+
+    if pk_path.exists() && vk_path.exists() {
+        println!("[keys] loading envelope_open_at_0 from disk");
+        let pk_bytes = fs::read(&pk_path)?;
+        let vk_bytes = fs::read(&vk_path)?;
+        let pk = deserialize_pk(&pk_bytes)
+            .map_err(|e| io_err(format!("envelope_open_at_0 PK deser: {e}")))?;
+        let vk = deserialize_vk(&vk_bytes)
+            .map_err(|e| io_err(format!("envelope_open_at_0 VK deser: {e}")))?;
+        return Ok(CircuitKeys {
+            pk: Arc::new(pk),
+            vk,
+        });
+    }
+
+    println!("[keys] running setup for envelope_open_at_0 (one-shot)");
+    // Same fixed seed strategy as pedersen_opens_to. A different
+    // seed per circuit keeps the keypairs independent (one
+    // setup's PK doesn't accidentally verify another circuit's
+    // proofs).
+    let mut rng = StdRng::seed_from_u64(0xBEEFCAFE);
+    let (pk, vk) = setup(EnvelopeOpenAt0::empty(), &mut rng)
+        .map_err(|e| io_err(format!("envelope_open_at_0 setup: {e}")))?;
+
+    let pk_bytes = serialize_pk(&pk)
+        .map_err(|e| io_err(format!("envelope_open_at_0 PK ser: {e}")))?;
+    let vk_bytes = serialize_vk(&vk)
+        .map_err(|e| io_err(format!("envelope_open_at_0 VK ser: {e}")))?;
     fs::write(&pk_path, &pk_bytes)?;
     fs::write(&vk_path, &vk_bytes)?;
     println!(

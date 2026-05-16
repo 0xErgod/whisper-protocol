@@ -74,6 +74,10 @@ crypto = { path = "../crypto" }
 # dev-deps need an explicit row to be visible in tests.)
 # prover is already a normal dep; no row needed here.
 
+# Used by the envelope_open_at_0 end-to-end test to construct
+# the honest fixture via the canonical seal function.
+protocol = { path = "../protocol" }
+
 # Tokio with "test" multi-thread runtime explicitly enabled for
 # `#[tokio::test]`. The lib's tokio dep already enables this
 # transitively, but being explicit avoids feature-resolution
