@@ -1,0 +1,97 @@
+/*
+ * Design tokens for the curve viz.
+ *
+ * NOTE(duplication): this file is a verbatim copy of
+ * `apps/protocol/src/styles/tokens.css` so the two apps share the same
+ * visual language without depending on each other. The intended next step
+ * is extracting this into `apps/shared-styles/` (or similar) as a tiny
+ * workspace package both apps import from — at which point both copies of
+ * this file go away in a single PR. Until then, keep them in sync: any
+ * change here should land in the protocol app's copy too.
+ */
+
+:root {
+  --font-mono: "Geist Mono", "GeistMono-Regular", "JetBrains Mono", Consolas, Monaco, monospace;
+  --font-size: 14px;
+  --line-height: 1.4;
+
+  --gray-3: #080808;
+  --gray-7: #121212;
+  --gray-11: #1c1c1c;
+  --gray-15: #262626;
+  --gray-23: #3a3a3a;
+  --gray-42: #6c6c6c;
+  --gray-66: #a8a8a8;
+  --gray-80: #c6c6c6;
+  --gray-93: #eeeeee;
+
+  --brand: #ff9944;
+  --brand-dim: rgba(255, 153, 68, 0.55);
+  --brand-faint: rgba(255, 153, 68, 0.12);
+  --bright-green: #55ff55;
+  --bright-magenta: #ff55ff;
+  --bright-cyan: #773333;
+  --bright-orange: #ffaa55;
+
+  --ok: var(--bright-green);
+  --warn: var(--brand);
+  --bad: #ff5555;
+
+  --bg: var(--gray-3);
+  --bg-elevated: var(--gray-11);
+  --bg-bubble: var(--gray-15);
+  --bg-bubble-locked: var(--gray-7);
+  --border: var(--gray-23);
+  --border-strong: var(--gray-42);
+  --text: var(--gray-93);
+  --text-dim: var(--gray-66);
+  --text-faint: var(--gray-42);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+  font-feature-settings: "ss01", "zero";
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  padding: 0.25rem 1ch;
+  cursor: pointer;
+}
+button:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+button[aria-pressed="true"] {
+  background: var(--brand);
+  color: var(--gray-3);
+  border-color: var(--brand);
+}
+
+::selection {
+  background: var(--brand);
+  color: var(--gray-3);
+}

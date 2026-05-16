@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>zk playground — groth16 in the browser</title>
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <link rel="stylesheet" href="/src/styles/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1 class="app-title">zk playground</h1>
+        <p class="app-sub">
+          two circuits, end-to-end through the same Rust → WASM → TypeScript
+          chain that powers <code>apps/curve</code>. proving runs server-side
+          (via <code>prover-server</code>); verifying runs in this browser
+          tab via <code>prover-wasm</code>. anchored to the
+          <code>specs/zk/circuit-*.md</code> contracts the Rust tests pin.
+        </p>
+        <div class="app-meta">
+          <span><strong>system</strong> groth16 on bn254</span>
+          <span><strong>curve</strong> baby jubjub (ERC-2494 dialect)</span>
+          <span><strong>server</strong> <code id="server-url">…</code></span>
+        </div>
+      </header>
+
+      <!-- Panel 1: pedersen_opens_to -->
+      <section class="section">
+        <h2 class="section-title">pedersen_opens_to</h2>
+        <div class="panel">
+          <aside>
+            <p class="blurb">
+              the first circuit. proves "this Pedersen commitment opens to a
+              stream whose first element equals
+              <code>claimed_first_value</code>" without revealing the rest of
+              the stream or the blinding. the spec's worked example fills in
+              by default.
+            </p>
+            <div class="controls">
+              <button id="pedersen-prove">prove</button>
+              <button id="pedersen-verify" disabled>verify</button>
+              <button id="pedersen-tamper" disabled>verify (tampered)</button>
+            </div>
+            <div class="readout" id="pedersen-readout">initializing…</div>
+          </aside>
+          <aside>
+            <p class="blurb"><strong>inputs (canonical fixture):</strong></p>
+            <pre class="readout" id="pedersen-inputs"></pre>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Panel 2: envelope_open_at_0 -->
+      <section class="section">
+        <h2 class="section-title">envelope_open_at_0</h2>
+        <div class="panel">
+          <aside>
+            <p class="blurb">
+              the protocol's headline circuit. alice seals a 9-element
+              plaintext to bob via <code>protocol::envelope::seal</code>; bob
+              proves "i'm the recipient and <code>plaintext[0]</code> equals
+              the claimed value" without revealing his secret key or the
+              other plaintext elements. signal-hash compression keeps public
+              inputs under Sui's 8-element cap.
+            </p>
+            <div class="controls">
+              <button id="envelope-prove">prove</button>
+              <button id="envelope-verify" disabled>verify</button>
+              <button id="envelope-tamper" disabled>verify (tampered)</button>
+            </div>
+            <div class="readout" id="envelope-readout">initializing…</div>
+          </aside>
+          <aside>
+            <p class="blurb"><strong>inputs (canonical fixture):</strong></p>
+            <pre class="readout" id="envelope-inputs"></pre>
+          </aside>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
