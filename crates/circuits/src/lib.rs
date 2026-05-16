@@ -40,4 +40,5 @@
 //!   `crates/prover-wasm` will reach into this crate alongside
 //!   `prover` if in-browser proving lands.
 
+pub mod envelope_open_at_0;
 pub mod pedersen_opens_to;
