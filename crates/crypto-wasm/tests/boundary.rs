@@ -27,7 +27,7 @@
 use wasm_bindgen_test::*;
 
 use crypto_wasm::{
-    ecdh, generator, keypair_from_seed, mul_generator, pedersen_commit, pedersen_h,
+    ecdh, generator, keypair_from_seed, mul_generator, pedersen_commit, pedersen_g, pedersen_h,
     poseidon_hash_fixed, poseidon_hash_sponge, schnorr_sign, schnorr_verify, text_utf8_v1_decode,
     text_utf8_v1_encode, text_utf8_v1_id, validate_point,
 };
@@ -271,8 +271,9 @@ fn ecdh_rejects_invalid_inputs() {
 
 // --- pedersen fixture (specs/babyjub-pedersen.md § Worked Example) -------
 
-/// `pedersen_h()` returns the spec's pinned `H`. Catches an `H`
-/// derivation drift end-to-end through the JS<->WASM edge.
+/// `pedersen_h()` returns the spec's pinned `H` (the blinding
+/// generator). Catches an `H` derivation drift end-to-end through
+/// the JS<->WASM edge.
 #[wasm_bindgen_test]
 fn pedersen_h_matches_spec() {
     let h = pedersen_h();
@@ -286,44 +287,112 @@ fn pedersen_h_matches_spec() {
     );
 }
 
-/// `pedersen_commit(1, 2)` — spec vector 1, driven through the boundary
-/// as decimal strings exactly as `apps/curve` will call it.
+/// `pedersen_g(0)` returns the spec's pinned `G_0` (the first value
+/// generator). Verifies the indexed-generator derivation makes it
+/// through the boundary intact.
+#[wasm_bindgen_test]
+fn pedersen_g_0_matches_spec() {
+    let g0 = pedersen_g(0);
+    assert_eq!(
+        g0.x(),
+        "21825913315207187562682941426389735603195557456908788185325554283133704969469",
+    );
+    assert_eq!(
+        g0.y(),
+        "13858835039840996693419673582381761260939607442217267755302767527818398641731",
+    );
+}
+
+/// Spec Vector 1: `commit([1, 2, 3], 7)` — small stream through the
+/// boundary as a JS array of decimal strings.
 #[wasm_bindgen_test]
 fn pedersen_commit_vector_1() {
-    let c = pedersen_commit("1", "2").expect("valid scalars");
+    let c = pedersen_commit(
+        vec!["1".into(), "2".into(), "3".into()],
+        "7",
+    )
+    .expect("valid stream and blinding");
     assert_eq!(
         c.x(),
-        "19911656000857052962597456184037789990217243984679140824149869840037557852443",
+        "13038198386731673912560721016555247709029515585051432629517992977316576071934",
     );
     assert_eq!(
         c.y(),
-        "34605269953567020705948092501852398380697724299788400696888085852242656086",
+        "9212446836796220420114805122843851887604206441937641721882028388154348874834",
     );
 }
 
-/// `pedersen_commit(85, 7)` — spec vector 5, the homomorphic-sum
-/// anchor. The TS-side panel will visualize `commit(42, 2) + commit(43,
-/// 5) == commit(85, 7)`; this test pins the right-hand-side.
+/// Spec Vector 3: 9-element stream matching `text-utf8-v1`'s shape.
+/// The "production" case — every commitment to an encoded text payload
+/// has this stream length.
 #[wasm_bindgen_test]
-fn pedersen_commit_vector_5() {
-    let c = pedersen_commit("85", "7").expect("valid scalars");
+fn pedersen_commit_vector_3_text_utf8_shape() {
+    let stream: Vec<String> = (0u64..9).map(|i| i.to_string()).collect();
+    let c = pedersen_commit(stream, "42").expect("valid");
     assert_eq!(
         c.x(),
-        "6870881176262591255209957784559476352128178258958653506281010548778139552124",
+        "1816745010582515843223529375604165335664011795439985242868613130573867132011",
     );
     assert_eq!(
         c.y(),
-        "21358251945557300339181094850512781582761528410355366539487020884672487905717",
+        "1118057154514564837088862449882370788049673922232213149895810435579743690349",
     );
 }
 
-/// Malformed scalars come back as exceptions, not panics. The
-/// boundary's error contract for `pedersen_commit`.
+/// Spec Vector 4: empty stream produces `blinding · H`. The "no
+/// content" edge case.
+#[wasm_bindgen_test]
+fn pedersen_commit_vector_4_empty_stream() {
+    let c = pedersen_commit(vec![], "123").expect("empty is well-defined");
+    assert_eq!(
+        c.x(),
+        "13828148247158678812499162641315699180347697370202244738700865095716896041487",
+    );
+    assert_eq!(
+        c.y(),
+        "15186219207262690188902497053707372380315160076221164591981113425196456829665",
+    );
+}
+
+/// Spec Vector 5sum: the element-wise homomorphism anchor's
+/// right-hand side. Pinned at the boundary.
+#[wasm_bindgen_test]
+fn pedersen_commit_vector_5_homomorphism_anchor() {
+    let c = pedersen_commit(
+        vec!["15".into(), "35".into(), "55".into()],
+        "300",
+    )
+    .expect("valid");
+    assert_eq!(
+        c.x(),
+        "7197332655677449090088671372714432917743021897248424654297871978491214754206",
+    );
+    assert_eq!(
+        c.y(),
+        "3491146607410882481913448536648113321671999435511322181830072546126502831366",
+    );
+}
+
+/// Malformed inputs come back as exceptions, not panics. Boundary
+/// error contract for the new stream-shaped binding.
 #[wasm_bindgen_test]
 fn pedersen_commit_rejects_garbage() {
-    assert!(pedersen_commit("abc", "2").is_err(), "garbage value must error");
-    assert!(pedersen_commit("1", "-3").is_err(), "negative blinding must error");
-    assert!(pedersen_commit("", "2").is_err(), "empty value must error");
+    assert!(
+        pedersen_commit(vec!["abc".into()], "2").is_err(),
+        "garbage stream element must error",
+    );
+    assert!(
+        pedersen_commit(vec!["1".into()], "-3").is_err(),
+        "negative blinding must error",
+    );
+    assert!(
+        pedersen_commit(vec!["".into()], "2").is_err(),
+        "empty stream element must error",
+    );
+    assert!(
+        pedersen_commit(vec!["1".into()], "abc").is_err(),
+        "garbage blinding must error",
+    );
 }
 
 // --- schnorr fixture (specs/babyjub-schnorr.md § Worked Example) -------

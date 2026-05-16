@@ -212,40 +212,78 @@ pub fn ecdh(my_seed: &[u8], peer_pk_x: &str, peer_pk_y: &str) -> Result<Point, J
     Ok(babyjub::point_to_strings(&shared).into())
 }
 
-/// Pedersen commitment over Baby Jubjub: `C = value · G + blinding · H`.
+/// Vector Pedersen commitment over Baby Jubjub:
+/// `C = Σ stream_i · G_i + blinding · H`.
 ///
-/// `value` and `blinding` are decimal-string scalars in `F_l`. The
-/// `babyjub-pedersen-v1` second generator `H` is fixed and pinned in
-/// `specs/babyjub-pedersen.md`; this binding does not let the JS caller
-/// supply a different `H`, deliberately — a wrong `H` would invalidate
-/// the binding property silently.
+/// `stream` is a JS array of decimal-string field-element values (the
+/// `Fq` base field — what every encoding produces). `blinding` is a
+/// decimal-string scalar in `F_l`. The generators `H` and `G_0,
+/// G_1, …` are fixed and pinned in `specs/babyjub-pedersen.md`;
+/// this binding does not let the JS caller supply alternatives,
+/// deliberately — a wrong generator would invalidate the binding
+/// property silently.
+///
+/// Stream length is unbounded. An empty stream produces `blinding · H`
+/// — the "no content with hiding" commitment.
 ///
 /// **The caller is responsible for `blinding`.** Reusing it across
-/// commitments to different values is a hiding-failure footgun
+/// commitments to different streams is a hiding-failure footgun
 /// (documented in the spec). This binding does not sample randomness;
 /// the JS-side caller should generate `blinding` via the browser's
-/// `crypto.getRandomValues` (or equivalent) and convert to a decimal
-/// string.
+/// `crypto.getRandomValues` and reduce mod the Baby Jubjub scalar
+/// order before passing.
 ///
 /// Returns the commitment point as decimal-string coordinates. A
-/// malformed scalar comes back as a JS exception, not a panic.
+/// malformed input is a JS exception, not a panic.
 #[wasm_bindgen]
-pub fn pedersen_commit(value: &str, blinding: &str) -> Result<Point, JsError> {
-    let v = babyjub::scalar_from_decimal(value)
-        .map_err(|e| JsError::new(&format!("value: {e}")))?;
+pub fn pedersen_commit(
+    stream: Vec<String>,
+    blinding: &str,
+) -> Result<Point, JsError> {
+    use ark_ff::PrimeField;
+
+    // Parse stream elements as `Fq` (base field) values. Same digit-
+    // shape gate every other scalar/coordinate parser at the boundary
+    // applies.
+    let mut fields: Vec<crypto::babyjub::Fq> = Vec::with_capacity(stream.len());
+    for (i, d) in stream.iter().enumerate() {
+        if d.is_empty() || !d.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(JsError::new(&format!(
+                "stream[{i}]: must be a non-negative base-10 integer",
+            )));
+        }
+        fields.push(
+            d.parse::<crypto::babyjub::Fq>()
+                .map_err(|_| JsError::new(&format!("stream[{i}]: parse error")))?,
+        );
+    }
+
     let r = babyjub::scalar_from_decimal(blinding)
         .map_err(|e| JsError::new(&format!("blinding: {e}")))?;
-    let c = babyjub::commit(v, r);
+    // Silence `into_bigint` unused-import warning when `PrimeField` is
+    // imported only for trait bounds; the cast above is the real use.
+    let _ = <crypto::babyjub::Fq as PrimeField>::MODULUS;
+
+    let c = babyjub::commit(&fields, r);
     Ok(babyjub::point_to_strings(&c).into())
 }
 
-/// Expose the protocol's fixed Pedersen `H` generator. Useful for
-/// visualizations and audits that want to see `H` directly.
-/// `H` is constant — same on every call — and pinned in
+/// Expose the protocol's fixed Pedersen `H` generator (the blinding
+/// generator). Useful for visualizations and audits that want to see
+/// `H` directly. Constant — same on every call — and pinned in
 /// `specs/babyjub-pedersen.md`.
 #[wasm_bindgen]
 pub fn pedersen_h() -> Point {
     babyjub::point_to_strings(&babyjub::h_generator()).into()
+}
+
+/// Expose the `i`-th Pedersen value generator `G_i`. Useful for
+/// visualizations and audits. `i` is the zero-based index into the
+/// value-generator family pinned in `specs/babyjub-pedersen.md`.
+/// Each `G_i` is constant — same on every call for the same `i`.
+#[wasm_bindgen]
+pub fn pedersen_g(i: usize) -> Point {
+    babyjub::point_to_strings(&babyjub::g_generator(i)).into()
 }
 
 /// A Baby Jubjub Schnorr signature in the boundary's wire form:
