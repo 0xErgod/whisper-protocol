@@ -432,3 +432,80 @@ pub fn text_utf8_v1_decode(stream: Vec<String>) -> Result<Vec<u8>, JsError> {
     let fs = decimals_to_stream(stream)?;
     text_utf8_v1::TextUtf8V1::decode(&fs).map_err(|e| JsError::new(&e.to_string()))
 }
+
+// --- poseidon hash bindings -------------------------------------------
+//
+// One pair of exports per Poseidon family — `_fixed` and `_sponge`.
+// Both take decimal-string inputs and return a decimal-string output;
+// `_fixed` can throw `ArityOutOfRange`. The two are different hash
+// functions and produce different outputs on the same `(domain, inputs)`
+// — the choice between them is the consumer's design-time call, pinned
+// in the consumer's spec.
+
+/// Helper: parse a single decimal string into an `Fq` field element,
+/// rejecting leading signs / garbage to match the boundary's other
+/// scalar parsers.
+fn fq_from_decimal(s: &str, label: &str) -> Result<crypto::babyjub::Fq, JsError> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(JsError::new(&format!(
+            "{label}: must be a non-negative base-10 integer",
+        )));
+    }
+    s.parse::<crypto::babyjub::Fq>()
+        .map_err(|_| JsError::new(&format!("{label}: parse error")))
+}
+
+/// Helper: parse a JS array of decimal strings into a `Vec<Fq>` for
+/// the input to a Poseidon hash. Used by both `poseidon_hash_fixed`
+/// and `poseidon_hash_sponge`.
+fn decimals_to_fields(inputs: Vec<String>) -> Result<Vec<crypto::babyjub::Fq>, JsError> {
+    let mut fields = Vec::with_capacity(inputs.len());
+    for (i, d) in inputs.iter().enumerate() {
+        let label = format!("input[{i}]");
+        fields.push(fq_from_decimal(d, &label)?);
+    }
+    Ok(fields)
+}
+
+/// Fixed-arity Poseidon hash. See `specs/poseidon-hash-fixed.md`.
+///
+/// `domain_tag` and each element of `inputs` are decimal-string field
+/// elements. Output is a decimal-string field element. Throws on
+/// malformed input or when the input length exceeds 11 (i.e. total
+/// arity > 12). For variable-length or longer input, use
+/// `poseidon_hash_sponge`.
+#[wasm_bindgen]
+pub fn poseidon_hash_fixed(
+    domain_tag: &str,
+    inputs: Vec<String>,
+) -> Result<String, JsError> {
+    use ark_ff::PrimeField;
+
+    let d = fq_from_decimal(domain_tag, "domain_tag")?;
+    let fields = decimals_to_fields(inputs)?;
+    let h = crypto::poseidon::poseidon_hash_fixed(d, &fields)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(h.into_bigint().to_string())
+}
+
+/// Sponge Poseidon hash. See `specs/poseidon-hash-sponge.md`.
+///
+/// `domain_tag` and each element of `inputs` are decimal-string field
+/// elements. Output is a decimal-string field element. Accepts inputs
+/// of any length, including zero.
+///
+/// Produces a different hash than `poseidon_hash_fixed` on the same
+/// `(domain_tag, inputs)`. The choice between them is pinned in the
+/// consumer's spec.
+#[wasm_bindgen]
+pub fn poseidon_hash_sponge(
+    domain_tag: &str,
+    inputs: Vec<String>,
+) -> Result<String, JsError> {
+    use ark_ff::PrimeField;
+
+    let d = fq_from_decimal(domain_tag, "domain_tag")?;
+    let fields = decimals_to_fields(inputs)?;
+    let h = crypto::poseidon::poseidon_hash_sponge(d, &fields);
+    Ok(h.into_bigint().to_string())
+}

@@ -28,8 +28,8 @@ use wasm_bindgen_test::*;
 
 use crypto_wasm::{
     ecdh, generator, keypair_from_seed, mul_generator, pedersen_commit, pedersen_h,
-    schnorr_sign, schnorr_verify, text_utf8_v1_decode, text_utf8_v1_encode, text_utf8_v1_id,
-    validate_point,
+    poseidon_hash_fixed, poseidon_hash_sponge, schnorr_sign, schnorr_verify, text_utf8_v1_decode,
+    text_utf8_v1_encode, text_utf8_v1_id, validate_point,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -551,5 +551,104 @@ fn text_utf8_v1_rejects_invalid_inputs() {
     assert!(
         text_utf8_v1_decode(oversize).is_err(),
         "over-MAX length prefix must throw",
+    );
+}
+
+// --- poseidon hash fixture (specs/poseidon-hash-{fixed,sponge}.md) -----
+
+/// Pinned domain tag from the shared fixture: `domain_tag("poseidon-hash-fixture-v1")`.
+/// Catches any drift in either Blake2b or the field-reduction.
+const POSEIDON_FIXTURE_DOMAIN: &str =
+    "3979466444311687069470688388412388132284863585885029621423754853532995657454";
+
+/// Fixed Vector 2 (`[1, 2, 3]`): byte-exact through the boundary.
+#[wasm_bindgen_test]
+fn poseidon_fixed_vector_1_2_3_matches_spec() {
+    let out = poseidon_hash_fixed(
+        POSEIDON_FIXTURE_DOMAIN,
+        vec!["1".into(), "2".into(), "3".into()],
+    )
+    .expect("valid inputs");
+    assert_eq!(
+        out,
+        "12187659365913684405060258586364191053768216120494362944135933139066214817674",
+    );
+}
+
+/// Sponge Vector 2 (`[1, 2, 3]`): byte-exact through the boundary.
+/// Different from the fixed output on the same inputs — the
+/// cross-construction differentiator at the boundary.
+#[wasm_bindgen_test]
+fn poseidon_sponge_vector_1_2_3_matches_spec() {
+    let out = poseidon_hash_sponge(
+        POSEIDON_FIXTURE_DOMAIN,
+        vec!["1".into(), "2".into(), "3".into()],
+    )
+    .expect("valid inputs");
+    assert_eq!(
+        out,
+        "3142103391069538918340996461610585237878047473358483513672836623723625048541",
+    );
+}
+
+/// Sponge handles the 20-input vector the fixed sibling rejects. The
+/// canonical "you need the sponge here" case.
+#[wasm_bindgen_test]
+fn poseidon_sponge_handles_20_inputs() {
+    let inputs: Vec<String> = (0..20u64).map(|i| i.to_string()).collect();
+    let out = poseidon_hash_sponge(POSEIDON_FIXTURE_DOMAIN, inputs).expect("valid");
+    assert_eq!(
+        out,
+        "9741254265752179457738278212425315146396646303497642974741669492324356027870",
+    );
+}
+
+/// Fixed throws on the 20-input vector; sponge handles it. The
+/// error-contract version of the same test.
+#[wasm_bindgen_test]
+fn poseidon_fixed_rejects_20_inputs() {
+    let inputs: Vec<String> = (0..20u64).map(|i| i.to_string()).collect();
+    assert!(
+        poseidon_hash_fixed(POSEIDON_FIXTURE_DOMAIN, inputs).is_err(),
+        "20 inputs → arity 21 must throw on fixed",
+    );
+}
+
+/// Empty inputs are well-defined for both constructions. Each
+/// produces a per-domain constant; the two are distinct.
+#[wasm_bindgen_test]
+fn poseidon_empty_inputs_both_paths() {
+    let fixed = poseidon_hash_fixed(POSEIDON_FIXTURE_DOMAIN, vec![]).expect("ok");
+    let sponge = poseidon_hash_sponge(POSEIDON_FIXTURE_DOMAIN, vec![]).expect("ok");
+    assert_eq!(
+        fixed,
+        "20041987324127481975055040243862195468401413291871545710243215988343495957297",
+    );
+    assert_eq!(
+        sponge,
+        "10642285785463773045920661422493220139048932562145189104824959581581429359133",
+    );
+    assert_ne!(fixed, sponge, "fixed and sponge MUST differ at the boundary");
+}
+
+/// Both functions reject garbage input. Boundary error contract.
+#[wasm_bindgen_test]
+fn poseidon_rejects_garbage() {
+    // Garbage domain tag.
+    assert!(poseidon_hash_fixed("abc", vec!["1".into()]).is_err());
+    assert!(poseidon_hash_sponge("abc", vec!["1".into()]).is_err());
+    // Garbage input element.
+    assert!(
+        poseidon_hash_fixed(POSEIDON_FIXTURE_DOMAIN, vec!["abc".into()]).is_err()
+    );
+    assert!(
+        poseidon_hash_sponge(POSEIDON_FIXTURE_DOMAIN, vec!["abc".into()]).is_err()
+    );
+    // Negative number (boundary rejects leading signs).
+    assert!(
+        poseidon_hash_fixed(POSEIDON_FIXTURE_DOMAIN, vec!["-1".into()]).is_err()
+    );
+    assert!(
+        poseidon_hash_sponge(POSEIDON_FIXTURE_DOMAIN, vec!["-1".into()]).is_err()
     );
 }
