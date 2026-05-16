@@ -635,3 +635,43 @@ pub fn cipher_decrypt(
     let pt = babyjub::decrypt(k, &ct);
     Ok(pt.iter().map(|f| f.into_bigint().to_string()).collect())
 }
+
+/// Compute a MAC tag over a field-element stream under a symmetric
+/// key. See `specs/babyjub-mac.md`.
+///
+/// `key` is a decimal-string `Fq` element (typically the output of
+/// `kdf_derive` under the `envelope-mac-key` role). `message` is a
+/// JS array of decimal-string field elements. Returns the tag as a
+/// decimal-string field element.
+///
+/// No length cap. The empty message is valid and produces a per-key
+/// constant tag. A malformed input throws a JS exception.
+#[wasm_bindgen]
+pub fn mac(key: &str, message: Vec<String>) -> Result<String, JsError> {
+    use ark_ff::PrimeField;
+
+    let k = fq_from_decimal(key, "key")?;
+    let m = decimals_to_fields(message)?;
+    let tag = babyjub::mac_compute(k, &m);
+    Ok(tag.into_bigint().to_string())
+}
+
+/// Verify a MAC tag against a message under a key. See
+/// `specs/babyjub-mac.md`.
+///
+/// `key`, `tag`, and each `message` element are decimal-string `Fq`
+/// values. Returns `true` iff the tag is correct, `false` for any
+/// tamper or wrong key. Malformed inputs throw a JS exception —
+/// distinguishes "valid but bad tag" (returns false) from "broken
+/// input" (throws).
+#[wasm_bindgen]
+pub fn mac_verify(
+    key: &str,
+    message: Vec<String>,
+    tag: &str,
+) -> Result<bool, JsError> {
+    let k = fq_from_decimal(key, "key")?;
+    let m = decimals_to_fields(message)?;
+    let t = fq_from_decimal(tag, "tag")?;
+    Ok(babyjub::mac_verify(k, &m, t))
+}

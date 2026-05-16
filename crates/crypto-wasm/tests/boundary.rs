@@ -27,10 +27,10 @@
 use wasm_bindgen_test::*;
 
 use crypto_wasm::{
-    cipher_decrypt, cipher_encrypt, ecdh, generator, kdf_derive, keypair_from_seed, mul_generator,
-    pedersen_commit, pedersen_g, pedersen_h, poseidon_hash_fixed, poseidon_hash_sponge,
-    schnorr_sign, schnorr_verify, text_utf8_v1_decode, text_utf8_v1_encode, text_utf8_v1_id,
-    validate_point,
+    cipher_decrypt, cipher_encrypt, ecdh, generator, kdf_derive, keypair_from_seed, mac,
+    mac_verify, mul_generator, pedersen_commit, pedersen_g, pedersen_h, poseidon_hash_fixed,
+    poseidon_hash_sponge, schnorr_sign, schnorr_verify, text_utf8_v1_decode, text_utf8_v1_encode,
+    text_utf8_v1_id, validate_point,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -1048,5 +1048,103 @@ fn cipher_rejects_invalid_inputs() {
     assert!(
         cipher_decrypt(CIPHER_KEY_ENVELOPE_42, vec!["-1".into()]).is_err(),
         "signed ciphertext element must throw",
+    );
+}
+
+// --- babyjub-mac boundary -----------------------------------------------
+//
+// Chains from the KDF fixture's Vector 3 (mac-role key for envelope
+// 42). Vector 5 chains further through the cipher to pin the
+// encrypt-then-MAC envelope at the boundary.
+
+/// Vector 1: empty message tag through the boundary.
+#[wasm_bindgen_test]
+fn mac_vector_1_empty_message() {
+    let tag = mac(MAC_KEY_ENVELOPE_42, vec![]).expect("ok");
+    assert_eq!(
+        tag,
+        "13976129352745355852952122427372408395772002964442343488572190579262395794749",
+    );
+    assert!(mac_verify(MAC_KEY_ENVELOPE_42, vec![], &tag).expect("ok"));
+}
+
+/// Vector 3: small structured message tag — pinned byte-for-byte.
+#[wasm_bindgen_test]
+fn mac_vector_3_small_message() {
+    let m: Vec<String> = vec!["1".into(), "2".into(), "3".into(), "4".into()];
+    let tag = mac(MAC_KEY_ENVELOPE_42, m.clone()).expect("ok");
+    assert_eq!(
+        tag,
+        "19959040651903833489024164256692762142561345502386131858898218371248838287538",
+    );
+    assert!(mac_verify(MAC_KEY_ENVELOPE_42, m, &tag).expect("ok"));
+}
+
+/// Vector 4: 9-element message — pins no-length-cap.
+#[wasm_bindgen_test]
+fn mac_vector_4_nine_element_message() {
+    let m: Vec<String> = (1u64..=9).map(|i| i.to_string()).collect();
+    let tag = mac(MAC_KEY_ENVELOPE_42, m.clone()).expect("ok");
+    assert_eq!(
+        tag,
+        "21372504646644668171584038078143205540789048079810990041830821947945838102294",
+    );
+    assert!(mac_verify(MAC_KEY_ENVELOPE_42, m, &tag).expect("ok"));
+}
+
+/// Vector 5: the encrypt-then-MAC envelope. Encrypt `[1,2,3,4]`
+/// under the cipher-role key, then MAC the resulting ciphertext
+/// under the mac-role key. Pinned byte-for-byte.
+#[wasm_bindgen_test]
+fn mac_vector_5_encrypt_then_mac_envelope() {
+    let pt: Vec<String> = vec!["1".into(), "2".into(), "3".into(), "4".into()];
+    let ct = cipher_encrypt(CIPHER_KEY_ENVELOPE_42, pt).expect("ok");
+    let tag = mac(MAC_KEY_ENVELOPE_42, ct.clone()).expect("ok");
+    assert_eq!(
+        tag,
+        "16162720997808794646235033165738484245710842752524771795771394985271256269398",
+    );
+    assert!(mac_verify(MAC_KEY_ENVELOPE_42, ct, &tag).expect("ok"));
+}
+
+/// Tampering with the message under the right key fails to verify
+/// at the boundary. The integrity property.
+#[wasm_bindgen_test]
+fn mac_verify_rejects_tampered_message() {
+    let m: Vec<String> = vec!["1".into(), "2".into(), "3".into(), "4".into()];
+    let tag = mac(MAC_KEY_ENVELOPE_42, m).expect("ok");
+    let tampered: Vec<String> = vec!["1".into(), "2".into(), "3".into(), "5".into()];
+    assert!(
+        !mac_verify(MAC_KEY_ENVELOPE_42, tampered, &tag).expect("ok"),
+        "tampered message must not verify",
+    );
+}
+
+/// Verify rejects the right tag under the wrong key.
+#[wasm_bindgen_test]
+fn mac_verify_rejects_wrong_key() {
+    let m: Vec<String> = vec!["1".into(), "2".into(), "3".into(), "4".into()];
+    let tag = mac(MAC_KEY_ENVELOPE_42, m.clone()).expect("ok");
+    assert!(
+        !mac_verify(CIPHER_KEY_ENVELOPE_42, m, &tag).expect("ok"),
+        "wrong key must not verify",
+    );
+}
+
+/// Boundary error contract: garbage key, message, or tag throws
+/// rather than silently producing a wrong-result `false`.
+#[wasm_bindgen_test]
+fn mac_rejects_invalid_inputs() {
+    assert!(
+        mac("abc", vec!["1".into()]).is_err(),
+        "garbage key must throw",
+    );
+    assert!(
+        mac(MAC_KEY_ENVELOPE_42, vec!["abc".into()]).is_err(),
+        "garbage message element must throw",
+    );
+    assert!(
+        mac_verify(MAC_KEY_ENVELOPE_42, vec!["1".into()], "abc").is_err(),
+        "garbage tag must throw",
     );
 }
