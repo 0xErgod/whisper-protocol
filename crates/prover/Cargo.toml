@@ -1,0 +1,44 @@
+# NOTE(name): crate is published-internally as `prover` for now. The protocol's
+# public name is not yet decided — do NOT bake a product name into the crate
+# name, module paths, or type names. When the name lands, only this file and
+# the workspace member entry should need touching.
+[package]
+name = "prover"
+version = "0.1.0"
+edition = "2024"
+description = "Groth16 trusted setup, prove, and verify for the protocol's circuits."
+
+[dependencies]
+# The circuits this prover serves. Each circuit module exposes a
+# `ConstraintSynthesizer<Fq>` and an `empty()` constructor; the prover knows
+# nothing else about them.
+circuits = { path = "../circuits" }
+# Native primitives for fixture construction in tests (commitments, signatures,
+# etc.) and for the `Fq` / `Fr` field types.
+crypto = { path = "../crypto" }
+
+# Groth16 over BN254 — the proving system pinned in `specs/zk/stack.md`.
+ark-groth16 = "0.5"
+# The pairing-friendly curve Groth16 is instantiated over.
+ark-bn254 = "0.5"
+# Generic SNARK trait.
+ark-snark = "0.5"
+# Constraint-system plumbing (`ConstraintSynthesizer`).
+ark-relations = "0.5"
+# Field traits and `ark-std::test_rng` for setup randomness.
+ark-ff = "0.5"
+ark-std = "0.5"
+# Canonical (de)serialization for PK / VK byte blobs.
+ark-serialize = "0.5"
+# Typed errors for the prover surface. Pinned to 1.0 (the
+# pre-2.0 line is what the rest of arkworks transitively pulls
+# in; adding the 2.0 line would create a duplicate transitive
+# dependency).
+thiserror = "1"
+
+# NOTE: `tracing_subscriber` is NOT a dependency here. See
+# `specs/zk/stack.md § No tracing_subscriber in the prover hot path`
+# for the 400x performance regression that justifies this ban.
+
+[dev-dependencies]
+ark-ed-on-bn254 = "0.5"
