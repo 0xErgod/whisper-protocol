@@ -22,6 +22,12 @@ ark-bn254 = "0.5"
 # Field + curve traits.
 ark-ff = "0.5"
 ark-ec = "0.5"
+# Baby Jubjub scalar field `Fr`. Pulled in for the same reason the
+# native `crypto` crate does: arkworks' verified scalar-field
+# constants for the subgroup order. We do NOT use this crate's
+# curve config — it ships the default `a = 1` Edwards dialect; our
+# `BabyJubConfig` overrides to circomlib's `a = 168700`.
+ark-ed-on-bn254 = "0.5"
 # Constraint-system plumbing: `ConstraintSystemRef`, `SynthesisError`,
 # `Namespace`.
 ark-relations = "0.5"

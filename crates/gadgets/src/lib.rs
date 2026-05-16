@@ -56,6 +56,7 @@
 //!   native-only so it composes cleanly into either the server or
 //!   the WASM build.
 
+pub mod babyjub;
 pub mod poseidon;
 
 /// BN254's base field — the field every protocol value lives in.
