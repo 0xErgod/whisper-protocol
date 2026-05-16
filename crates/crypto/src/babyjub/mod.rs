@@ -9,6 +9,7 @@
 mod config;
 mod curve;
 mod ecdh;
+mod kdf;
 mod keypair;
 mod pedersen;
 mod schnorr;
@@ -17,6 +18,7 @@ mod wire;
 pub use config::{BabyJubConfig, EdwardsAffine, EdwardsProjective, Fq, Fr};
 pub use curve::{generator, is_in_prime_subgroup, is_on_curve, mul, IDENTITY};
 pub use ecdh::shared_secret;
+pub use kdf::{derive as kdf_derive, KDF_DOMAIN, MAX_CONTEXT_LEN as KDF_MAX_CONTEXT_LEN};
 pub use keypair::{keypair_from_seed, PublicKey, SecretKey, Seed, KEYPAIR_DOMAIN};
 pub use pedersen::{
     commit, derive_g_at, derive_h, g_generator, h_generator, G_DOMAIN, H_DOMAIN,
