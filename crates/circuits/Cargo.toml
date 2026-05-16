@@ -1,0 +1,31 @@
+# NOTE(name): crate is published-internally as `circuits` for now. The
+# protocol's public name is not yet decided — do NOT bake a product name into
+# the crate name, module paths, or type names. When the name lands, only this
+# file and the workspace member entry should need touching.
+[package]
+name = "circuits"
+version = "0.1.0"
+edition = "2024"
+description = "Groth16-on-BN254 circuits expressing the protocol's provable claims."
+
+[dependencies]
+# The R1CS gadgets every circuit composes. Pulls in the curve, Poseidon,
+# Pedersen, Schnorr, etc. gadgets that mirror `crates/crypto`'s native
+# primitives.
+gadgets = { path = "../gadgets" }
+# Native references — circuits need the native `Fq` and `Fr` for their
+# `Option<T>` witness slots, and the native primitives for fixture
+# construction in tests.
+crypto = { path = "../crypto" }
+
+# Field traits.
+ark-ff = "0.5"
+# Constraint system plumbing.
+ark-relations = "0.5"
+# Gadget primitives.
+ark-r1cs-std = "0.5"
+# Baby Jubjub scalar field.
+ark-ed-on-bn254 = "0.5"
+
+[dev-dependencies]
+ark-std = { version = "0.5", features = ["std"] }
