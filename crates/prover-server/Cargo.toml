@@ -1,0 +1,81 @@
+# NOTE(name): crate is published-internally as `prover-server` for now. The
+# protocol's public name is not yet decided — do NOT bake a product name into
+# the crate name, module paths, or type names. When the name lands, only this
+# file and the workspace member entry should need touching.
+[package]
+name = "prover-server"
+version = "0.1.0"
+edition = "2024"
+description = "Axum HTTP server exposing the protocol's Groth16 circuits."
+
+[dependencies]
+# The proving stack: setup/prove/verify, byte serialization,
+# PK/VK types.
+prover = { path = "../prover" }
+# Circuits + their wire-form Inputs structs. Each circuit's
+# `Inputs` and `PublicInputs` lands here directly; the server
+# doesn't re-define I/O shapes.
+circuits = { path = "../circuits" }
+
+# Field types for the verifier-side public-input vector.
+ark-bn254 = "0.5"
+
+# HTTP server. Axum 0.7 line is the current stable.
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+# Permissive CORS by default; production deployments tighten this.
+tower-http = { version = "0.5", features = ["cors"] }
+
+# JSON for request bodies and responses.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Setup / prove RNG. ark_std::test_rng is deterministic and
+# reproducible — fine for dev. Production will swap to OsRng;
+# documented in the stack spec.
+ark-std = "0.5"
+rand = "0.8"
+
+# Typed errors at the HTTP boundary.
+thiserror = "1"
+
+# Hex codec for proof bytes in /verify request bodies. JSON
+# doesn't carry binary cleanly; the /prove response is raw
+# bytes (octet-stream), and clients hex-encode when they
+# round-trip through /verify.
+hex = "0.4"
+
+# NOTE: `tracing_subscriber` is NOT a dependency, and `main.rs` does
+# NOT install one. See `specs/zk/stack.md § No tracing_subscriber in
+# the prover hot path` for the 400x performance regression that
+# justifies this ban. Logs use println.
+
+[[bin]]
+name = "prover-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+# HTTP client for the end-to-end integration test. `reqwest`'s
+# default features include the tokio runtime hookup; we add
+# `json` for the typed request/response helpers.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Temp dir for the test's PK/VK persistence so the local dev
+# `./keys/` is untouched.
+tempfile = "3"
+# Field types and native commit used to build the honest
+# fixture in the integration test.
+ark-bn254 = "0.5"
+ark-ed-on-bn254 = "0.5"
+ark-ff = "0.5"
+crypto = { path = "../crypto" }
+# Direct access to the prover crate for the
+# "verify-locally-with-fetched-VK" cross-path test.
+# (The lib-side already pulls this in transitively, but
+# dev-deps need an explicit row to be visible in tests.)
+# prover is already a normal dep; no row needed here.
+
+# Tokio with "test" multi-thread runtime explicitly enabled for
+# `#[tokio::test]`. The lib's tokio dep already enables this
+# transitively, but being explicit avoids feature-resolution
+# surprises if the lib's features ever narrow.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "test-util"] }
