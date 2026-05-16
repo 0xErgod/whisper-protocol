@@ -1525,6 +1525,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "protocol"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-ed-on-bn254",
+ "ark-ff",
+ "ark-std",
+ "crypto",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "prover"
 version = "0.1.0"
 dependencies = [
