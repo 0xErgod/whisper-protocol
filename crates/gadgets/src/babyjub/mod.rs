@@ -35,12 +35,14 @@ pub mod ecdh;
 pub mod kdf;
 pub mod keypair;
 pub mod mac;
+pub mod pedersen;
 
 pub use cipher::{decrypt_var, encrypt_var};
 pub use ecdh::shared_secret_var;
 pub use kdf::kdf_derive_var;
 pub use keypair::pk_from_sk_var;
 pub use mac::mac_var;
+pub use pedersen::{commit_var, g_generator_constant, h_generator_constant};
 
 use ark_ed_on_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
