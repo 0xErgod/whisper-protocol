@@ -12,11 +12,13 @@ mod curve;
 mod ecdh;
 mod kdf;
 mod keypair;
+mod mac;
 mod pedersen;
 mod schnorr;
 mod wire;
 
 pub use cipher::{decrypt, encrypt, CIPHER_DOMAIN};
+pub use mac::{mac as mac_compute, verify as mac_verify, MAC_DOMAIN};
 pub use config::{BabyJubConfig, EdwardsAffine, EdwardsProjective, Fq, Fr};
 pub use curve::{generator, is_in_prime_subgroup, is_on_curve, mul, IDENTITY};
 pub use ecdh::shared_secret;
