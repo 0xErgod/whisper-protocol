@@ -8,5 +8,6 @@ members = [
     "crates/circuits",
     "crates/prover",
     "crates/prover-server",
+    "crates/prover-wasm",
 ]
 resolver = "3"

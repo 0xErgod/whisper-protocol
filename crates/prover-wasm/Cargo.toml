@@ -1,0 +1,68 @@
+# NOTE(name): working name `prover-wasm` — the WASM binding face of the
+# `prover` crate. No product name baked in; a rename touches this file, the
+# workspace member entry, and the `pkg` name consumed by `apps/`.
+[package]
+name = "prover-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "WASM bindings for in-browser Groth16 proving. PK/VK supplied as Uint8Array by the caller."
+
+[lib]
+# `cdylib` is the crate type wasm-bindgen / wasm-pack compile to a `.wasm`
+# module. `rlib` is kept so the crate can still be unit-tested natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The proving stack: setup is NOT used here (browsers shouldn't
+# run Groth16 setup), but prove/verify and the byte-blob
+# (de)serializers are.
+prover = { path = "../prover" }
+# Circuits + their wire-form Inputs. Each circuit's Inputs JSON
+# arrives at the binding as a string; we deserialize into the
+# typed Inputs and call try_into to build the circuit.
+circuits = { path = "../circuits" }
+
+wasm-bindgen = "0.2"
+# JSON deserialization at the boundary — the JS caller hands in
+# a JSON string; we parse it into the circuit's Inputs.
+serde_json = "1"
+# RNG plumbing for Groth16 proving. `ark_std::rand::rngs::StdRng`
+# is what arkworks' prove path expects (`RngCore + CryptoRng`);
+# entropy comes from `getrandom`'s `js` feature, configured
+# below.
+ark-std = "0.5"
+
+[dependencies.getrandom]
+# Same gotcha as crypto-wasm: arkworks pulls in `getrandom`,
+# and on `wasm32-unknown-unknown` it needs the `js` feature to
+# route through the browser's `crypto.getRandomValues`. The
+# Groth16 prove step explicitly consumes randomness, so unlike
+# crypto-wasm this isn't just a transitive concern — it's the
+# RNG that produces the proof.
+version = "0.2"
+features = ["js"]
+
+[build-dependencies]
+# Build script pre-generates a (PK, VK) and an honest proof for
+# every circuit, written to OUT_DIR. The wasm boundary tests
+# `include_bytes!` these fixtures so `wasm-pack test` doesn't
+# have to run Groth16 setup inside the browser (minutes-slow).
+circuits = { path = "../circuits" }
+crypto = { path = "../crypto" }
+prover = { path = "../prover" }
+ark-bn254 = "0.5"
+ark-ed-on-bn254 = "0.5"
+ark-ff = "0.5"
+ark-std = "0.5"
+serde_json = "1"
+
+[dev-dependencies]
+# `wasm-bindgen-test` runs boundary tests in a real (headless)
+# browser via `wasm-pack test --headless --chrome --release`.
+wasm-bindgen-test = "0.3"
+
+# Same wasm-opt gotcha as crypto-wasm: the bundled wasm-opt fails
+# on Windows for arkworks-heavy output. The unoptimized .wasm is
+# larger; revisit when shipping to production.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

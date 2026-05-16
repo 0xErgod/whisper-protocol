@@ -1565,6 +1565,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "prover-wasm"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-ed-on-bn254",
+ "ark-ff",
+ "ark-std",
+ "circuits",
+ "crypto",
+ "getrandom 0.2.17",
+ "prover",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
