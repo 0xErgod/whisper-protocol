@@ -1,8 +1,13 @@
 /**
- * Schnorr signature demo: sign a message field element with a
- * randomized seed, plot the signer's `PK` and the signature commitment
- * point `R`, and assert the signature verifies. A tamper button
- * corrupts the signature on demand so the rejection path is visible.
+ * Schnorr signature demo: sign a stream-shaped message with a
+ * randomized seed, plot the signer's `PK` and the signature
+ * commitment point `R`, and assert the signature verifies. A tamper
+ * button corrupts the signature on demand so the rejection path is
+ * visible.
+ *
+ * Messages are entered as comma-separated decimal field elements
+ * (length 0..11). The initial frame uses the spec's vector-4
+ * `text-utf8-v1`-shaped message `[0, 1, 2, ..., 8]`.
  *
  * No curve math here — everything goes through `crypto-wasm`'s
  * `schnorr_sign` / `schnorr_verify` exports, anchored to
@@ -28,6 +33,27 @@ function randomSeed(): Uint8Array {
   return buf;
 }
 
+/** Parse a comma-separated stream of non-negative decimal integers.
+ *  Whitespace around each element is trimmed. Empty input yields an
+ *  empty stream — a valid message under this scheme. */
+function parseStream(s: string): string[] | { error: string } {
+  const trimmed = s.trim();
+  if (trimmed === "") return [];
+  const parts = trimmed.split(",").map((p) => p.trim());
+  for (const p of parts) {
+    if (!/^[0-9]+$/.test(p)) {
+      return { error: `"${p}" is not a non-negative decimal integer` };
+    }
+  }
+  return parts;
+}
+
+function isStreamError(
+  x: string[] | { error: string },
+): x is { error: string } {
+  return !Array.isArray(x);
+}
+
 export interface SchnorrPanelElements {
   canvas: HTMLCanvasElement;
   messageInput: HTMLInputElement;
@@ -38,8 +64,8 @@ export interface SchnorrPanelElements {
 
 interface State {
   seed: Uint8Array;
-  /** When non-null, replaces `s` in the signature presented to verify —
-   *  flips the panel from "ok" to "tampered" without recomputing
+  /** When non-null, replaces `s` in the signature presented to verify
+   *  — flips the panel from "ok" to "tampered" without recomputing
    *  anything else. */
   tamper_s: string | null;
 }
@@ -55,10 +81,18 @@ export function setupSchnorrPanel(els: SchnorrPanelElements): void {
   };
 
   function update(): void {
+    const parsed = parseStream(els.messageInput.value);
+    if (isStreamError(parsed)) {
+      els.readout.innerHTML = `<span class="error">${parsed.error}</span>`;
+      ctx.clearRect(0, 0, W, H);
+      drawGrid(ctx, W, H);
+      return;
+    }
+
     let pk, sig;
     try {
       pk = keypair_from_seed(state.seed);
-      sig = schnorr_sign(state.seed, els.messageInput.value);
+      sig = schnorr_sign(state.seed, parsed);
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       els.readout.innerHTML = `<span class="error">sign failed: ${m}</span>`;
@@ -73,7 +107,7 @@ export function setupSchnorrPanel(els: SchnorrPanelElements): void {
       ok = schnorr_verify(
         pk.pk_x,
         pk.pk_y,
-        els.messageInput.value,
+        parsed,
         sig.r_x,
         sig.r_y,
         s_for_verify,
@@ -91,9 +125,7 @@ export function setupSchnorrPanel(els: SchnorrPanelElements): void {
     const pPk = toPixel(pk.pk_x, pk.pk_y, W, H);
     const pR = toPixel(sig.r_x, sig.r_y, W, H);
 
-    // Faint line from PK to R — both are signer-derived, suggests
-    // "these belong together." When tampered, the color flips to a
-    // warning to make the bad state visible at a glance.
+    // Faint line from PK to R; turns red when tampered.
     ctx.save();
     ctx.globalAlpha = 0.25;
     ctx.strokeStyle = ok ? palette.shared : palette.bad;
@@ -108,7 +140,7 @@ export function setupSchnorrPanel(els: SchnorrPanelElements): void {
     drawAnchor(ctx, pR.px, pR.py, palette.shared, "R");
 
     els.readout.innerHTML = `
-      <div class="row"><span class="label">m</span> <code>${els.messageInput.value}</code></div>
+      <div class="row"><span class="label">|message|</span> <code>${parsed.length}</code></div>
       <div class="row"><span class="label">PK.x</span> <code>${shortCoord(pk.pk_x)}</code></div>
       <div class="row"><span class="label">R.x</span> <code>${shortCoord(sig.r_x)}</code></div>
       <div class="row"><span class="label">s</span> <code>${shortCoord(s_for_verify)}</code>${state.tamper_s ? ' <span class="label">(tampered)</span>' : ""}</div>
@@ -119,8 +151,8 @@ export function setupSchnorrPanel(els: SchnorrPanelElements): void {
   }
 
   els.messageInput.addEventListener("input", () => {
-    // A new message invalidates any prior tamper — the user's signing
-    // a fresh message now.
+    // A new message invalidates any prior tamper — a fresh message
+    // implies a fresh signature, no tamper carryover.
     state.tamper_s = null;
     update();
   });
@@ -130,27 +162,23 @@ export function setupSchnorrPanel(els: SchnorrPanelElements): void {
     update();
   });
   els.tamperBtn.addEventListener("click", () => {
-    // Toggle: if already tampered, restore; otherwise tamper by
-    // adding 1 mod l to the response scalar. Adding 1 always changes
-    // the value — no surprise edge cases.
     if (state.tamper_s) {
       state.tamper_s = null;
     } else {
-      // We need the current valid `s` first. Re-sign to get it.
       try {
-        const sig = schnorr_sign(state.seed, els.messageInput.value);
+        const parsed = parseStream(els.messageInput.value);
+        if (isStreamError(parsed)) return;
+        const sig = schnorr_sign(state.seed, parsed);
         const tampered = (BigInt(sig.s) + 1n) % SUBGROUP_ORDER;
         state.tamper_s = tampered.toString();
       } catch {
-        // If signing fails (bad message input) the tamper button is a
-        // no-op rather than introducing a different error state.
         return;
       }
     }
     update();
   });
 
-  // Initialize with a friendly message and a fresh random seed.
-  els.messageInput.value = "42";
+  // Initialize with the spec's vector-4 message (text-utf8-v1 shape).
+  els.messageInput.value = "0, 1, 2, 3, 4, 5, 6, 7, 8";
   update();
 }

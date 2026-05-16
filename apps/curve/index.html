@@ -134,18 +134,19 @@
           <canvas id="stage-schnorr" width="420" height="420"></canvas>
           <aside>
             <p class="blurb">
-              sign a field-element message with a randomized seed. the
-              signature is <code>(R, s)</code>; the panel plots
-              <code>PK</code> and <code>R</code> and verifies
-              <code>s·G == R + c·PK</code> in-page. the
-              <strong>tamper</strong> button adds 1 to <code>s</code> mod
-              <code>l</code> to demo the rejection path — when tampered,
-              the verification line turns red and the connecting stroke
-              follows.
+              sign a stream-shaped message with a randomized seed. the
+              message is a comma-separated list of field elements
+              (length 0..11); the signature is <code>(R, s)</code>. the
+              panel plots <code>PK</code> and <code>R</code> and
+              verifies <code>s·G == R + c·PK</code> in-page. the
+              <strong>tamper</strong> button adds 1 to <code>s</code>
+              mod <code>l</code> to demo the rejection path — when
+              tampered, the verification line turns red and the
+              connecting stroke follows.
             </p>
             <div class="controls">
-              <label for="schnorr-message">m</label>
-              <input id="schnorr-message" type="text" value="42" />
+              <label for="schnorr-message">message</label>
+              <input id="schnorr-message" type="text" value="0, 1, 2, 3, 4, 5, 6, 7, 8" />
             </div>
             <div class="controls">
               <button id="schnorr-random">new signer seed</button>

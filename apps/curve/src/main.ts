@@ -12,7 +12,7 @@
  *  - `pedersen-panel`  — two streams + two blindings → three vector
  *                        Pedersen commitments showing the element-wise
  *                        additive-homomorphism property
- *  - `schnorr-panel`   — sign a field-element message, plot PK + R,
+ *  - `schnorr-panel`   — sign a stream-shaped message, plot PK + R,
  *                        verify in-page; tamper button to demo the
  *                        rejection path
  *  - `encoding-panel`  — type text, see the 9-element field stream
