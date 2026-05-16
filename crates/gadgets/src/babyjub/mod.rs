@@ -31,11 +31,15 @@
 //!   constant `BabyJubAffineVar`.
 
 pub mod cipher;
+pub mod ecdh;
 pub mod kdf;
+pub mod keypair;
 pub mod mac;
 
 pub use cipher::{decrypt_var, encrypt_var};
+pub use ecdh::shared_secret_var;
 pub use kdf::kdf_derive_var;
+pub use keypair::pk_from_sk_var;
 pub use mac::mac_var;
 
 use ark_ed_on_bn254::Fr;
