@@ -21,7 +21,10 @@ pub use keypair::{keypair_from_seed, PublicKey, SecretKey, Seed, KEYPAIR_DOMAIN}
 pub use pedersen::{
     commit, derive_g_at, derive_h, g_generator, h_generator, G_DOMAIN, H_DOMAIN,
 };
-pub use schnorr::{sign, verify, Signature, CHALLENGE_DOMAIN, NONCE_DOMAIN};
+pub use schnorr::{
+    sign, verify, SchnorrError, Signature, CHALLENGE_DOMAIN, MAX_MESSAGE_LEN, MESSAGE_DOMAIN,
+    NONCE_DOMAIN,
+};
 pub use wire::{
     point_from_strings, point_to_strings, scalar_from_decimal, scalar_to_decimal, PointStrings,
     WireError,

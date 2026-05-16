@@ -1,40 +1,56 @@
-# Baby Jubjub Schnorr Signatures (`babyjub-schnorr-v1`)
+# Baby Jubjub Schnorr Signatures (`babyjub-schnorr`)
 
-This document specifies the Schnorr-style signature scheme used by the
-protocol. Sign-a-field-element, deterministic nonce, Poseidon-based
-challenge with `PK`-prefixing. Cross-language compatibility contract
-between the Rust `crypto` crate, the WASM binding, and the TypeScript
-SDK. Built on [`babyjub-curve.md`](./babyjub-curve.md),
-[`babyjub-keypair.md`](./babyjub-keypair.md), and the protocol's shared
-Poseidon parameters.
+This document specifies the Schnorr-style signature scheme used by
+the protocol: a deterministic Schnorr over Baby Jubjub that signs a
+**stream of field elements** as its message. Cross-language
+compatibility contract between the Rust `crypto` crate, the WASM
+binding, and the TypeScript SDK. Built on
+[`babyjub-curve.md`](./babyjub-curve.md),
+[`babyjub-keypair.md`](./babyjub-keypair.md),
+[`poseidon-hash-fixed.md`](./poseidon-hash-fixed.md).
 
-> **NOTE(name):** scheme tag `babyjub-schnorr-v1` and crate name
+> **NOTE(name):** scheme tag `babyjub-schnorr` and crate name
 > `crypto` are working names. No product name baked in.
 
-**Any implementation that does not reproduce the exact signature values
-in [§ Worked Example](#worked-example) is incompatible with this scheme
-and will not interoperate.**
+**Any implementation that does not reproduce the exact signature
+values in [§ Worked Example](#worked-example) is incompatible with
+this scheme and will not interoperate.**
 
 ## What this signs
 
-A single field element `m ∈ F_p`. Not arbitrary bytes — that
-composition (`bytes → m` via hashing) lives at the caller. The
-canonical use cases inside the protocol all naturally produce a field
-element to be signed: a Pedersen commitment value, an envelope handle,
-a Poseidon hash of an opening, a stored on-chain object id reduced to
-the field. Any byte-message signing layer must pick its own
-byte-to-field encoding with its own domain tag.
+A **stream** of field elements `message ∈ F_p^n` with `0 ≤ n ≤
+MAX_MESSAGE_LEN`. The protocol's stream-shaped encodings (see
+[`encodings/README.md`](./encodings/README.md)) produce exactly this
+shape: a `text-utf8-v1` encoded payload is 9 field elements, well
+under the cap. Signing the encoding's output directly preserves the
+structure into the signature without an intermediate
+hash-and-then-sign step.
+
+```text
+MAX_MESSAGE_LEN = 11
+```
+
+The cap comes from the fixed-arity Poseidon ceiling: the message
+hash is one `Poseidon-(1+n)` call, and `light-poseidon`'s shipped
+circomlib parameters cap at total arity 12 (= 1 domain + 11
+payload). Beyond that, a future variant would either chunk-and-
+chain the message hash or use the sponge — both are different
+schemes and mint their own spec. Keeping this one ceiling-bound
+means the in-circuit message hash is one permutation, no branching.
+Same ZK-friendliness discipline as
+[`poseidon-hash-fixed.md`](./poseidon-hash-fixed.md).
 
 ## What this does NOT define
 
-- **Sign-arbitrary-bytes.** Future composition. The caller's
-  byte→field hashing has its own design surface (chunking, length,
-  domain) that doesn't belong in the signature primitive.
+- **Sign-arbitrary-bytes.** The caller hashes bytes to a field-element
+  stream via an encoding from `crates/encodings/*`, then signs the
+  stream.
+- **Long messages** (length > 11). A future `babyjub-schnorr-long` or
+  similar would mint a new spec and use a different message-hash
+  construction (sponge, or chunked fixed-arity).
 - **Batch verification.** A few-percent speedup at most for this
   small-arity curve; not worth the API complication.
-- **Multi-signature / threshold variants.** Separate primitives. The
-  single-signer Schnorr construction here is the base case both build
-  on, but neither is implemented.
+- **Threshold / multi-signature variants.** Separate primitives.
 
 ## Construction
 
@@ -43,111 +59,114 @@ Given:
 - `sk ∈ F_l` — signer's secret scalar (from
   [`babyjub-keypair.md`](./babyjub-keypair.md))
 - `PK ∈ G` — signer's public key, `PK = sk · Base8`
-- `m ∈ F_p` — message field element
+- `message ∈ F_p^n` — message stream of length `n ≤ MAX_MESSAGE_LEN`
 
 ### Sign
 
 ```text
-sk_as_fq  = lift sk from F_l into F_p     (lossless: l < p)
-k_fq      = Poseidon6(nonce_domain, sk_as_fq, m, 0, 0, 0)
-k         = k_fq reduced into F_l         (mod-l reduction)
-R         = k · Base8                                          // commitment point
-c_fq      = Poseidon6(challenge_domain, R.x, R.y, PK.x, PK.y, m)
-c         = c_fq reduced into F_l         (mod-l reduction)
-s         = k + c · sk    mod l                                // response scalar
-signature = (R, s)
+m_hash      = Poseidon-hash-fixed(message_domain, message)
+sk_as_fq    = lift sk from F_l into F_p     (lossless: l < p)
+k_fq        = Poseidon-hash-fixed(nonce_domain, [sk_as_fq, m_hash])
+k           = k_fq reduced into F_l         (mod-l reduction)
+R           = k · Base8                                                  // commitment point
+c_fq        = Poseidon-hash-fixed(challenge_domain, [R.x, R.y, PK.x, PK.y, m_hash])
+c           = c_fq reduced into F_l         (mod-l reduction)
+s           = k + c · sk    mod l                                        // response scalar
+signature   = (R, s)
 ```
 
 ### Verify
 
 ```text
-c_fq = Poseidon6(challenge_domain, R.x, R.y, PK.x, PK.y, m)
-c    = c_fq reduced into F_l
+m_hash = Poseidon-hash-fixed(message_domain, message)
+c_fq   = Poseidon-hash-fixed(challenge_domain, [R.x, R.y, PK.x, PK.y, m_hash])
+c      = c_fq reduced into F_l
 accept iff   s · Base8  ==  R + c · PK
 ```
 
+A conformant implementation MUST reject messages of length > 11
+with a typed length error from both `sign` and `verify`. (See the
+[`poseidon-hash-fixed`](./poseidon-hash-fixed.md) error contract —
+the message hash's `ArityOutOfRange` propagates as `MessageTooLong`
+here.)
+
 ## Design decisions, pinned
 
-### Deterministic nonce (RFC 6979 style, with Poseidon)
+### Hash-then-include
 
-The nonce `k` is derived from `(sk, m)` via Poseidon with its own
-domain tag. No randomness enters signing. **This is a non-negotiable
-security choice for Schnorr**: two signatures `(R, s₁)` and `(R, s₂)`
-on different messages with the same `k` reveal `sk` instantly. Modern
-practice (Ed25519, BIP-340, etc.) is to derandomise. The cost is
-roughly one extra Poseidon call; the safety win is total elimination
-of an entire failure class.
+The message stream is collapsed to a single field element via
+`Poseidon-hash-fixed(message_domain, message)` before it enters the
+nonce and challenge hashes. The challenge hash itself stays at fixed
+arity 6 (1 domain + 5 inputs: `R.x, R.y, PK.x, PK.y, m_hash`)
+regardless of message length. This means:
 
-Padding to arity-6 with zeros is intentional: `poseidon6` is the only
-arity this scheme uses (the challenge also needs 6 inputs), so reusing
-it keeps the binary surface small. The domain tag distinguishes the
-nonce hash from the challenge hash; a collision in padding positions
-across the two uses is impossible by domain separation.
+- A 9-field message and a 33-field message would sign through the
+  **same circuit shape** (once the long-message variant exists) —
+  only the message-hash witness differs.
+- The verifier's circuit is parametric in message length without
+  any constraint-count branching.
+- Two cheap Poseidon calls instead of one big one: negligible
+  signing cost, big in-circuit-uniformity win.
 
-### Sign-one-field-element
+### Deterministic nonce (RFC 6979 / BIP-340 style)
 
-Schnorr signs `m ∈ F_p`. The choice avoids baking a byte-message
-encoding into the signature primitive. Real composition uses
-field-element-shaped objects (commitment values, hashes, ids); the
-primitive matches that shape directly.
+The nonce `k` is derived from `(sk, m_hash)` via Poseidon with its
+own domain tag. No randomness enters signing. This is the
+**non-negotiable** security choice for Schnorr: two signatures
+sharing a nonce reveal `sk` instantly. Modern practice (Ed25519,
+BIP-340) is to derandomise; the cost is one Poseidon call and the
+safety win is the elimination of an entire failure class.
 
-### Domain-separated challenge
+### Three distinct domain tags
 
-`c = Poseidon6(challenge_domain, R.x, R.y, PK.x, PK.y, m)`. The
-domain tag prevents the same six field elements from collapsing to the
-same hash across schemes — a hash used as both a signature challenge
-and a commitment input, even with shared sub-inputs, would be a
-cross-protocol oracle. The tag is the one bit of separation that costs
-nothing and rules out an entire attack class.
+`message_domain`, `nonce_domain`, `challenge_domain` — so the three
+internal hashes are syntactically and semantically distinct.
+Cross-protocol oracle risk goes to zero: even with colliding
+payload inputs, the hashes can't be misused as one another.
 
 ### `PK` in the challenge (key prefixing)
 
-Including `PK.x, PK.y` in the challenge hash prevents related-key
-attacks where an adversary tries to repurpose a signature under a
-different public key. Standard Schnorr-with-key-prefixing; BIP-340 does
-this for the same reason.
+The challenge includes `PK.x` and `PK.y`. Standard
+Schnorr-with-key-prefixing — prevents related-key attacks where an
+adversary tries to repurpose a signature under a different public
+key. BIP-340 does this; same reasoning here.
 
 ### Field reductions
 
-Two `F_p → F_l` reductions happen: one for `k` (after the nonce hash)
-and one for `c` (after the challenge hash). Both go through
-serialize-to-bytes + reduce-mod-`l`. The bias from `p` (~254 bits) to
-`l` (~251 bits) on Poseidon-uniform input is ~2⁻²⁵¹, well below
-cryptographic relevance. Same trick the keypair derivation uses; see
-[`babyjub-keypair.md`](./babyjub-keypair.md).
+Two `F_p → F_l` reductions happen: one for `k` (after the nonce
+hash) and one for `c` (after the challenge hash). Both via
+serialize-to-bytes + reduce-mod-`l`. The bias from `p` (254 bits) to
+`l` (251 bits) on Poseidon-uniform input is `~2⁻²⁵¹`, far below
+cryptographic relevance.
 
 ## Domain tags
 
 ```text
-nonce_domain     = "babyjub-schnorr-nonce-v1"
-challenge_domain = "babyjub-schnorr-challenge-v1"
+message_domain   = "babyjub-schnorr-message"
+nonce_domain     = "babyjub-schnorr-nonce"
+challenge_domain = "babyjub-schnorr-challenge"
 ```
 
-As reduced field elements:
+As `Fq` field elements (via `bytes_to_field_be(Blake2b-256(string))`,
+the same construction every protocol spec uses):
 
 ```text
-domain_tag("babyjub-schnorr-nonce-v1")     = 21729794174239755470552386574297440972213761608631578816820312365506580392985
-domain_tag("babyjub-schnorr-challenge-v1") = 20573619326964626862733302371592070954063093901187322038069098498158339541676
+message_domain   = 4959039381246480768649712740131367318031820083426683321809849078165270134540
+nonce_domain     = 13553819876672115371529980418111891239725968071633845505629858202683350719118
+challenge_domain = 15418927958364043498621237258658947106658773105201138129987459449759031421787
 ```
-
-The `-v1` suffixes reserve space for future tweaks (a different challenge
-arity, a different padding rule, key compression in the challenge inputs)
-without silently reusing the same scheme name.
 
 ## Wire form
 
-A signature is `(R, s)` where `R` is an affine curve point and `s` is
-an `F_l` scalar. The boundary representation matches the rest of the
-protocol's conventions:
+A signature is `(R, s)` where `R` is an affine curve point and `s`
+is an `F_l` scalar. Boundary representation:
 
-- `R.x` and `R.y` as base-10 decimal strings (the wire form pinned in
-  [`babyjub-curve.md`](./babyjub-curve.md))
+- `R.x` and `R.y` as base-10 decimal strings
 - `s` as a base-10 decimal string
 
-Three strings per signature. A decoder accepting `(R, s)` from an
-external source MUST validate `R` via `point_from_strings` (on-curve +
-prime-subgroup) before verification — same hygiene rule every external
-point gets.
+Three strings. A decoder accepting `(R, s)` from an external source
+MUST validate `R` via `point_from_strings` (on-curve +
+prime-subgroup) before verification.
 
 ## Worked Example
 
@@ -155,68 +174,105 @@ A conformant implementation reproduces every value below exactly.
 
 ### Signer keypair
 
-Seed `0x07` followed by 63 × `0x00`. This is the same seed the unit
-tests use, so the fixture and the unit tests cross-anchor.
+Seed `0x07` followed by 63 × `0x00`. Same seed the keypair fixture
+uses (and the previous Schnorr fixture used), so the keypair value
+is unchanged across the migration:
 
 ```text
 PK.x = 11164399029837664407055359313997844806901732622806579156125419783739925007983
 PK.y = 14592084695496273113419456967406390983505872435887630137749651140392618556302
 ```
 
-### Vector 1 — `m = 1`
+### Vector 1 — empty message
 
 ```text
-R.x = 11632351294401981618034412607960018633759132523604891111145083805962634408526
-R.y = 16437810892664933023884131539764605025844133936197983566486350081488662891513
-s   = 1812749329934557351717178747835822339686472044802696027660553171848252014907
+message = []
+R.x = 19672181936203324131656225559501475555772993461869651448031019731729494125516
+R.y = 13566859200123542336948177722573650541027744755873253525080581171534205128273
+s   = 585729486597474274390090641694341699325329864890452131536921756383744534588
 ```
 
-### Vector 2 — `m = 123456789`
+The empty message hashes to a per-domain constant
+(`Poseidon-1(message_domain)`), so this vector pins the "no
+content" baseline.
+
+### Vector 2 — single-element message
 
 ```text
-R.x = 6375882820815417677096742276733849921405984769193898132545252656057555844260
-R.y = 3047706727927232926540757222837094987678920983781058568722301670558932589075
-s   = 1672146590325984867501175997505308325917192911330920320014368257217536359444
+message = [42]
+R.x = 14463837123490585712352081519964757127730117503535410223157071561987752976040
+R.y = 14835801757202602810496014359609043970705906585033731611275274330266563989628
+s   = 1470727944428070892525141747972223984368576545003202506760627628426109537509
 ```
 
-### Vector 3 — `m = 2^240 = 1766847064778384329583297500742918515827483896875618958121606201292619776`
+The single-element case demonstrates that signing `[42]` is **not**
+equivalent to signing the bare field element `42` in the previous
+(scalar) construction — `m_hash` is `Poseidon-2(message_domain,
+42)`, not `42`. Migration is a breaking change; existing signatures
+from the prior scheme do not verify under this one.
+
+### Vector 3 — three-element message
 
 ```text
-R.x = 1395873755850300180104726848613996444071352053794302031425716596821856303738
-R.y = 20526401082777560701041724606565419033104885953699580911324980591395500280786
-s   = 2581033176336945103238693484339366247360111711785418479474279938072861984860
+message = [1, 2, 3]
+R.x = 4421583882441814884919433367012339810780463461595955860104800629341428551515
+R.y = 685556324815791047742857456106268926562746442722529319403820029970894328632
+s   = 2480202173437343318607319337411596044484259619894416475763013773164119271331
 ```
 
-A conformant implementation MUST also accept each `(R, s)` above as a
-valid signature on its message, and MUST reject any single-component
-tampering — change `m`, `R`, `s`, or the verifying `PK` and verify
-fails.
+### Vector 4 — `text-utf8-v1`-shaped message (9 elements)
+
+```text
+message = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+R.x = 9907919187759728836420608685439673743018415908584274981339045984432314418876
+R.y = 14320670493132427095800905404319123040028993772245066136630070019717299866336
+s   = 690166825546950374194223969053258468670318750960230750355004980014353065874
+```
+
+This vector represents the canonical protocol use: a `text-utf8-v1`
+encoded payload (9 field elements) signed directly without external
+collapse. The signing circuit shape is the same for this vector and
+the 11-element vector below; only the message-hash witness differs.
+
+### Vector 5 — maximum-length message (11 elements)
+
+```text
+message = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+R.x = 19963310545348971650786133235255750555652125687870187620843360496751874600702
+R.y = 1299550255739614117019408363067734689527566129196823495220357367769924437828
+s   = 531332205057006653850069745815249283082797922145794081647360253109887423674
+```
+
+The cap. A 12-element message produces `MessageTooLong { len: 12,
+max: 11 }` from both `sign` and `verify`. A conformant
+implementation MUST surface this as a typed error, not silently
+truncate.
 
 ## Validity contracts
 
 A conformant implementation MUST:
 
+- **Reject messages of length > 11** with a typed length error, in
+  both `sign` and `verify`. The empty message is valid.
 - **Reject signatures whose `R` is not in the prime-order subgroup.**
-  An off-subgroup `R` is the wire-decoded entry point for
-  subgroup-confinement attacks. The Rust crate enforces this by
-  requiring `R` to arrive via `point_from_strings` at the boundary.
-- **Not transmit `sk` or the derived nonce `k` across language
-  boundaries.** Both are sensitive. The WASM `sign()` entry point
-  takes the signer's 64-byte seed and re-derives `sk` and `k`
-  internally; neither is exposed.
+  Wire decoders MUST enforce this before `R` reaches `verify`.
+- **Reject signatures whose `R` is not on the curve.** Same wire
+  decoder.
 - **Treat the signature `(R, s)` as fully public.** No part of the
-  signature value is sensitive — only the secret key that produced it.
+  signature value is sensitive — only the secret key.
+- **Not transmit `sk` or the derived nonce `k` across language
+  boundaries.** The WASM `sign` entry point takes the signer's
+  64-byte seed and re-derives `sk` and `k` internally; neither is
+  exposed.
 
 ## References
 
-- [`babyjub-curve.md`](./babyjub-curve.md) — the curve everything
-  lives on.
-- [`babyjub-keypair.md`](./babyjub-keypair.md) — how `sk` and `PK` are
-  derived from a seed.
-- [`poseidon-commitment-format.md`](./poseidon-commitment-format.md) —
-  same Poseidon parameter set, same `bytes_to_field_be(Blake2b256(domain))`
-  domain-tag construction.
-- BIP-340 (Schnorr Signatures for secp256k1) — for the
-  key-prefixing-in-challenge and the deterministic-nonce rationale.
-  This scheme is the same idea over Baby Jubjub with Poseidon
-  challenges and a `F_p` message.
+- [`babyjub-curve.md`](./babyjub-curve.md) — the curve.
+- [`babyjub-keypair.md`](./babyjub-keypair.md) — keypair derivation.
+- [`poseidon-hash-fixed.md`](./poseidon-hash-fixed.md) — the
+  underlying hash, including the arity-12 cap that determines
+  `MAX_MESSAGE_LEN`.
+- BIP-340 (Schnorr Signatures for secp256k1) — for the key-prefixing
+  and deterministic-nonce rationale. This scheme is the same idea
+  over Baby Jubjub with Poseidon hashes and a field-element stream as
+  the message.

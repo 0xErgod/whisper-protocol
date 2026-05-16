@@ -319,36 +319,48 @@ impl Signature {
     }
 }
 
-/// Sign a single field-element message with the keypair derived from
-/// `seed`. Deterministic — same `(seed, m)` always produces the same
-/// signature. `m` is a base-10 decimal string interpreted as an
-/// element of `F_p` (the base field, not the scalar field).
+/// Helper: parse a JS array of decimal strings into a Vec<Fq>
+/// — the stream-input convention shared across the boundary's
+/// stream-shaped primitives.
+fn message_stream_from_decimals(
+    message: &[String],
+) -> Result<Vec<babyjub::Fq>, JsError> {
+    let mut out: Vec<babyjub::Fq> = Vec::with_capacity(message.len());
+    for (i, d) in message.iter().enumerate() {
+        if d.is_empty() || !d.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(JsError::new(&format!(
+                "message[{i}]: must be a non-negative base-10 integer",
+            )));
+        }
+        out.push(
+            d.parse::<babyjub::Fq>()
+                .map_err(|_| JsError::new(&format!("message[{i}]: parse error")))?,
+        );
+    }
+    Ok(out)
+}
+
+/// Sign a stream-shaped message with the keypair derived from `seed`.
+/// Deterministic — same `(seed, message)` always produces the same
+/// signature.
 ///
-/// **The signature primitive signs a field element, not arbitrary
-/// bytes.** A caller wanting to sign bytes hashes them to `F_p` first
-/// — see `specs/babyjub-schnorr.md` for the rationale. The boundary
-/// surface deliberately does not expose a byte-message variant.
+/// `message` is a JS array of decimal-string field elements in `F_p`
+/// (the base field). Length is capped at 11 elements (the Poseidon
+/// arity ceiling for the message hash); longer messages throw a JS
+/// exception. The empty message is valid.
 ///
-/// `seed` length is enforced at the boundary (exactly 64 bytes). A
-/// malformed `m` is a JS exception, not a panic.
+/// `seed` length is enforced at the boundary (exactly 64 bytes).
+/// Malformed input throws; never panics.
 #[wasm_bindgen]
-pub fn schnorr_sign(seed: &[u8], m: &str) -> Result<Signature, JsError> {
+pub fn schnorr_sign(seed: &[u8], message: Vec<String>) -> Result<Signature, JsError> {
     let bytes: [u8; 64] = seed
         .try_into()
         .map_err(|_| JsError::new("seed must be exactly 64 bytes"))?;
-    let m_fq = m
-        .parse::<babyjub::Fq>()
-        .map_err(|_| JsError::new("m must be a non-negative base-10 integer"))?;
-    // Reject leading signs explicitly, same hygiene rule the wire
-    // decoder applies to scalars: `BigInt.toString()` on a non-negative
-    // value never produces a sign, so a sign is a caller-side bug, not
-    // a representation we want to silently wrap.
-    if !m.bytes().all(|b| b.is_ascii_digit()) || m.is_empty() {
-        return Err(JsError::new("m must be a non-negative base-10 integer"));
-    }
+    let stream = message_stream_from_decimals(&message)?;
 
     let (sk, pk) = babyjub::keypair_from_seed(&babyjub::Seed::from_bytes(bytes));
-    let sig = babyjub::sign(&sk, &pk, m_fq);
+    let sig = babyjub::sign(&sk, &pk, &stream)
+        .map_err(|e| JsError::new(&e.to_string()))?;
     let r_strings = babyjub::point_to_strings(&sig.r);
     Ok(Signature {
         r_x: r_strings.x,
@@ -357,20 +369,20 @@ pub fn schnorr_sign(seed: &[u8], m: &str) -> Result<Signature, JsError> {
     })
 }
 
-/// Verify a Schnorr signature against a public key and message field
-/// element. Returns `true` iff valid; `false` for any tamper. Malformed
-/// inputs come back as a JS exception, distinguishing "invalid signature"
-/// (returns `false`) from "garbage input" (throws).
+/// Verify a Schnorr signature against a public key and message stream.
+/// Returns `true` iff valid; `false` for any tamper or invalid
+/// signature. Malformed inputs (off-curve PK or R, garbage decimals,
+/// over-length message) throw a JS exception — distinguishes "valid
+/// but bad signature" (returns false) from "broken input" (throws).
 ///
-/// `pk_x` / `pk_y` is the signer's public key. `r_x` / `r_y` + `s` is the
-/// signature. Both points are decoded through the validating wire
-/// decoder — off-curve or small-subgroup points fail at decode time,
-/// before any signature math runs.
+/// Both points are decoded through the validating wire decoder, so
+/// off-curve and small-subgroup points fail at the boundary before
+/// signature math runs.
 #[wasm_bindgen]
 pub fn schnorr_verify(
     pk_x: &str,
     pk_y: &str,
-    m: &str,
+    message: Vec<String>,
     r_x: &str,
     r_y: &str,
     s: &str,
@@ -382,18 +394,13 @@ pub fn schnorr_verify(
     let pk = babyjub::PublicKey::from_validated_point(pk_point);
     let s_scalar = babyjub::scalar_from_decimal(s)
         .map_err(|e| JsError::new(&format!("s: {e}")))?;
-    if !m.bytes().all(|b| b.is_ascii_digit()) || m.is_empty() {
-        return Err(JsError::new("m must be a non-negative base-10 integer"));
-    }
-    let m_fq = m
-        .parse::<babyjub::Fq>()
-        .map_err(|_| JsError::new("m must be a non-negative base-10 integer"))?;
+    let stream = message_stream_from_decimals(&message)?;
 
     let sig = babyjub::Signature {
         r: r_point,
         s: s_scalar,
     };
-    Ok(babyjub::verify(&pk, m_fq, &sig))
+    babyjub::verify(&pk, &stream, &sig).map_err(|e| JsError::new(&e.to_string()))
 }
 
 // --- encoding registry bindings ----------------------------------------

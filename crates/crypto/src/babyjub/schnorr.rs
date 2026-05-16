@@ -1,79 +1,144 @@
 //! Schnorr-style signatures over Baby Jubjub.
 //!
-//! Sign a single field element with a Baby Jubjub keypair. Verify with
-//! the matching public key. Composes the existing curve, keypair, and
-//! Poseidon bricks — no new primitives required.
+//! Sign a *stream* of field elements with a Baby Jubjub keypair.
+//! Verify with the matching public key. Composes the existing curve,
+//! keypair, and Poseidon-hash-fixed bricks — no new primitives
+//! required.
 //!
 //! ## Construction
 //!
-//! Sign `m ∈ F_p` with secret key `sk` (public key `PK = sk · G`):
+//! Sign `message ∈ F_p*` (a stream of at most `MAX_MESSAGE_LEN` field
+//! elements) with secret key `sk` (public key `PK = sk · G`):
 //!
 //! ```text
-//! k          = Poseidon6(nonce_domain, sk_as_fq, m, 0, 0, 0) mod l
-//! R          = k · G                                              // commitment point
-//! c_fq       = Poseidon6(challenge_domain, R.x, R.y, PK.x, PK.y, m)
-//! c          = c_fq mod l                                         // scalar in F_l
-//! s          = k + c · sk    mod l                                // response scalar
-//! signature  = (R, s)
+//! m_hash      = Poseidon_hash_fixed(message_domain, message)
+//! k           = Poseidon_hash_fixed(nonce_domain, [sk_as_fq, m_hash]) mod l
+//! R           = k · G                                                     // commitment point
+//! c           = Poseidon_hash_fixed(challenge_domain, [R.x, R.y, PK.x, PK.y, m_hash]) mod l
+//! s           = k + c · sk    mod l
+//! signature   = (R, s)
 //! ```
 //!
-//! Verify `(R, s)` against `PK` and `m`:
+//! Verify `(R, s)` against `PK` and `message`:
 //!
 //! ```text
-//! c = Poseidon6(challenge_domain, R.x, R.y, PK.x, PK.y, m) mod l
+//! m_hash = Poseidon_hash_fixed(message_domain, message)
+//! c      = Poseidon_hash_fixed(challenge_domain, [R.x, R.y, PK.x, PK.y, m_hash]) mod l
 //! accept iff   s · G  ==  R + c · PK
 //! ```
 //!
 //! ## Decisions baked in
 //!
-//! - **Deterministic nonce** (RFC 6979 style). `k` is derived from `sk`
-//!   and `m` via Poseidon with its own domain tag, *not* sampled
-//!   randomly. Schnorr's nonce-reuse failure mode is catastrophic — two
-//!   signatures sharing a nonce reveal `sk` instantly — so derandomising
-//!   eliminates the entire failure class. Matches Ed25519 / BIP-340
-//!   modern practice.
-//! - **Signs ONE field element, not arbitrary bytes.** The composition
-//!   "hash bytes to a field element first, then sign" is the caller's
-//!   job; it has its own encoding decisions (chunking, length, domain)
-//!   that don't belong in the signature primitive.
-//! - **Domain-separated challenge.** `Poseidon6(challenge_domain, R, PK,
-//!   m)` — the domain tag prevents the same Poseidon hash from being
-//!   used as both a signature challenge and, say, a commitment input,
-//!   even if the other inputs collide.
-//! - **`PK` in the challenge.** Standard Schnorr-with-key-prefixing —
-//!   prevents a class of related-key attacks where an attacker tries to
-//!   reuse a signature under a different public key. BIP-340 does this
-//!   too.
+//! - **Sign a STREAM, not a single field element.** The protocol's
+//!   payloads are stream-shaped (the encoding registry's universal
+//!   currency); the signature primitive matches. A length-zero
+//!   message is supported (signs only the empty hash); a single
+//!   `&[m]` is the natural way to sign one field element.
+//!
+//! - **Hash-then-include.** The message stream is first hashed to a
+//!   single field element via `poseidon_hash_fixed(message_domain,
+//!   message)`, then that hash enters the nonce and challenge as a
+//!   single field. The challenge hash itself stays at fixed arity 6
+//!   (1 domain + 5 inputs) regardless of message length, which means
+//!   a 9-field message and a 33-field message sign through the *same*
+//!   circuit shape — only the message-hash witness changes. Two cheap
+//!   Poseidon calls instead of one big one, and the in-circuit
+//!   verifier is parametric in message length without changing
+//!   constraint shape.
+//!
+//! - **Stream length capped at `MAX_MESSAGE_LEN = 11`.** Imposed by
+//!   `poseidon_hash_fixed`'s arity ceiling (12 total = 1 domain + 11
+//!   payload). Beyond that, a future variant would either chunk-and-
+//!   chain the message hash or use sponge — both are different
+//!   schemes and mint their own spec. Keeping this one ceiling-bound
+//!   means the in-circuit hash is one permutation, no branching.
+//!
+//! - **Deterministic nonce** (RFC 6979 / BIP-340 style). `k` is
+//!   derived from `sk` and the message hash via Poseidon with its own
+//!   domain tag, *not* sampled randomly. Schnorr's nonce-reuse
+//!   failure mode is catastrophic — two signatures sharing a nonce
+//!   reveal `sk` instantly — so derandomising eliminates the entire
+//!   failure class.
+//!
+//! - **Domain-separated everything.** Three distinct domain tags —
+//!   `message_domain`, `nonce_domain`, `challenge_domain` — so each
+//!   internal hash sits in its own slot. No hash output can be
+//!   misused as another's, even given a collision in payload.
+//!
+//! - **`PK` in the challenge.** Standard Schnorr-with-key-prefixing
+//!   to thwart related-key attacks. Same reasoning as BIP-340.
 //!
 //! ## Scope intentionally NOT in this brick
 //!
-//! - **Sign-arbitrary-bytes.** Future composition; the caller chooses the
-//!   byte → field encoding for their context.
+//! - **Sign-arbitrary-bytes.** The caller hashes bytes to field
+//!   elements (via an encoding from `crates/encodings/*`) and signs
+//!   the resulting stream.
+//! - **Long messages** (length > 11). A future
+//!   `babyjub-schnorr-long` or similar mints a new spec and is built
+//!   on a different message-hash construction (sponge, or chunked
+//!   fixed-arity).
 //! - **Batch verification.** A few-percent speedup at most for this
 //!   small-arity curve, not worth the API complication right now.
-//! - **`SecretKey: Zeroize`.** Same deferral as the keypair brick —
-//!   tracked, will land before any production caller retains `sk`.
+//! - **`SecretKey: Zeroize`.** Tracked as a follow-up; will land
+//!   before any production caller retains `sk`.
 //! - **Signature serialization beyond `(R, s)` decimal strings.** No
-//!   on-wire byte format yet; the wire form is the spec's decimal-string
-//!   triple `(R.x, R.y, s)`.
+//!   on-wire byte format yet; the wire form is the spec's
+//!   decimal-string triple `(R.x, R.y, s)`.
+
+use core::fmt;
 
 use ark_ec::{twisted_edwards::Projective, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
-use ark_std::Zero;
 
-use crate::poseidon::{domain_tag, poseidon6};
+use crate::poseidon::{domain_tag, poseidon_hash_fixed};
 
 use super::config::{EdwardsAffine, Fq, Fr};
 use super::curve::{generator, mul};
 use super::keypair::{PublicKey, SecretKey};
 
-/// Domain tag for the challenge hash. Pinned in
-/// `specs/babyjub-schnorr.md`; changing it changes every signature.
-pub const CHALLENGE_DOMAIN: &str = "babyjub-schnorr-challenge-v1";
+/// Domain tag for the message-hash that collapses a stream into one
+/// field element before it enters the nonce and challenge inputs.
+pub const MESSAGE_DOMAIN: &str = "babyjub-schnorr-message";
 
-/// Domain tag for the deterministic nonce derivation. Pinned in the
-/// spec; changing it changes which nonce a `(sk, m)` pair produces.
-pub const NONCE_DOMAIN: &str = "babyjub-schnorr-nonce-v1";
+/// Domain tag for the deterministic nonce derivation. Changing it
+/// changes which nonce a `(sk, message)` pair produces.
+pub const NONCE_DOMAIN: &str = "babyjub-schnorr-nonce";
+
+/// Domain tag for the challenge hash. Changing it changes every
+/// signature.
+pub const CHALLENGE_DOMAIN: &str = "babyjub-schnorr-challenge";
+
+/// Maximum message-stream length this scheme accepts. Imposed by
+/// `poseidon_hash_fixed`'s arity ceiling: 1 domain + 11 inputs = 12
+/// total, which is the max width `light-poseidon` ships circomlib
+/// parameters for. Longer messages would either need a different
+/// message-hash construction (sponge) or chunking — both are different
+/// schemes and would mint their own spec.
+pub const MAX_MESSAGE_LEN: usize = 11;
+
+/// Why a sign or verify call failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchnorrError {
+    /// The message stream exceeds [`MAX_MESSAGE_LEN`]. The protocol's
+    /// stream-shaped encodings (`text-utf8-v1`: 9 fields) all fit
+    /// well under this cap; a longer message wants a different
+    /// scheme.
+    MessageTooLong { len: usize, max: usize },
+}
+
+impl fmt::Display for SchnorrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SchnorrError::MessageTooLong { len, max } => write!(
+                f,
+                "schnorr message stream length {len} exceeds the cap of {max}; \
+                 use a different scheme for longer messages",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SchnorrError {}
 
 /// A Schnorr signature: commitment point `R` and response scalar `s`.
 ///
@@ -88,90 +153,114 @@ pub struct Signature {
     pub s: Fr,
 }
 
-/// Sign `m` with `sk`. Deterministic: the same `(sk, m)` always
-/// produces the same signature.
-pub fn sign(sk: &SecretKey, pk: &PublicKey, m: Fq) -> Signature {
-    // 1. Derive the nonce `k` deterministically. We hash `sk` (in F_l)
-    //    into the F_p input by serializing its bytes and re-parsing
-    //    into F_p — same boundary trick the keypair derivation uses.
-    //    Pad to arity-6 with zeros: arity-6 is the only `poseidon` we
-    //    expose (Schnorr also uses it for the challenge), so reusing it
-    //    keeps the binary surface small. Padding is fine: the domain
-    //    tag distinguishes this hash from the challenge hash, so a
-    //    collision in the padding positions cannot induce a collision
-    //    across the two uses.
+/// Sign `message` with `sk`. Deterministic: the same `(sk, message)`
+/// always produces the same signature.
+///
+/// Returns `Err(MessageTooLong)` if `message.len() > MAX_MESSAGE_LEN`.
+pub fn sign(
+    sk: &SecretKey,
+    pk: &PublicKey,
+    message: &[Fq],
+) -> Result<Signature, SchnorrError> {
+    // 1. Collapse the message stream into one field element via the
+    //    message-domain Poseidon hash. Returns the typed length error
+    //    if the stream is too long.
+    let m_hash = message_hash(message)?;
+
+    // 2. Deterministic nonce. Two inputs (sk-as-Fq, m_hash) under the
+    //    nonce domain. Arity 3 total — no padding, no zero-filler.
     let sk_as_fq = fr_to_fq(sk.scalar());
-    let k_fq = poseidon6(&[
+    let k_fq = poseidon_hash_fixed(
         domain_tag(NONCE_DOMAIN),
-        sk_as_fq,
-        m,
-        Fq::zero(),
-        Fq::zero(),
-        Fq::zero(),
-    ]);
+        &[sk_as_fq, m_hash],
+    )
+    .expect("nonce hash arity 3 is in range");
     let k = fq_to_fr(&k_fq);
 
-    // 2. Commitment R = k · G.
+    // 3. Commitment R = k · G.
     let r = mul(&k, &generator());
 
-    // 3. Challenge c = Poseidon(challenge_domain, R, PK, m), reduced
-    //    into F_l for the scalar arithmetic.
-    let c_fq = challenge_inner(&r, pk.point(), m);
+    // 4. Challenge c = Poseidon(challenge_domain, R.x, R.y, PK.x, PK.y, m_hash),
+    //    reduced into F_l for the scalar arithmetic.
+    let c_fq = challenge_inner(&r, pk.point(), m_hash);
     let c = fq_to_fr(&c_fq);
 
-    // 4. Response s = k + c · sk in F_l.
+    // 5. Response s = k + c · sk in F_l.
     let s = k + c * sk.scalar();
 
-    Signature { r, s }
+    Ok(Signature { r, s })
 }
 
-/// Verify `sig` against `pk` and `m`. Returns `true` iff the signature
-/// is valid.
-pub fn verify(pk: &PublicKey, m: Fq, sig: &Signature) -> bool {
-    // Recompute the challenge from the public values only — no secret
-    // input crosses this function.
-    let c_fq = challenge_inner(&sig.r, pk.point(), m);
+/// Verify `sig` against `pk` and `message`. Returns `Ok(true)` if the
+/// signature is valid, `Ok(false)` if it is well-formed but invalid,
+/// and `Err(MessageTooLong)` if `message.len() > MAX_MESSAGE_LEN`.
+///
+/// The error distinguishes "valid-but-bad signature" (a possible
+/// attacker behavior) from "broken input" (a caller bug). Both yield
+/// rejection but the failure modes are different.
+pub fn verify(
+    pk: &PublicKey,
+    message: &[Fq],
+    sig: &Signature,
+) -> Result<bool, SchnorrError> {
+    let m_hash = message_hash(message)?;
+
+    let c_fq = challenge_inner(&sig.r, pk.point(), m_hash);
     let c = fq_to_fr(&c_fq);
 
-    // Check s · G == R + c · PK in the group. Done in projective
-    // coordinates because group addition is cheaper there; converted to
-    // affine once for the equality test.
+    // s · G == R + c · PK in the group.
     let lhs = mul(&sig.s, &generator());
     let rhs = (Projective::from(sig.r) + Projective::from(mul(&c, pk.point()))).into_affine();
-    lhs == rhs
+    Ok(lhs == rhs)
+}
+
+/// The message-hash. Collapses a stream of up to `MAX_MESSAGE_LEN`
+/// field elements into one element via `poseidon_hash_fixed` under
+/// the message domain. Returns the typed error if the stream is too
+/// long.
+///
+/// A zero-length message hashes to `poseidon_hash_fixed(message_domain,
+/// [])` — a well-defined per-domain constant. A single-element message
+/// `&[m]` hashes to a domain-distinguished function of `m`, *not* to
+/// `m` itself, which means a signature on `&[m]` is not equivalent to
+/// a signature on the bare `m` from the previous scheme.
+fn message_hash(message: &[Fq]) -> Result<Fq, SchnorrError> {
+    if message.len() > MAX_MESSAGE_LEN {
+        return Err(SchnorrError::MessageTooLong {
+            len: message.len(),
+            max: MAX_MESSAGE_LEN,
+        });
+    }
+    Ok(poseidon_hash_fixed(domain_tag(MESSAGE_DOMAIN), message)
+        .expect("message len ≤ MAX_MESSAGE_LEN, so total arity is in range"))
 }
 
 /// The challenge hash, shared between sign and verify. Takes the
-/// commitment point `R`, the verifier's public key, and the signed
-/// message field element, and returns a field element in `F_p`.
+/// commitment point `R`, the verifier's public key, and the
+/// already-collapsed message hash, and returns a field element in
+/// `F_p`.
 ///
-/// `R` and `PK` are decomposed into their affine `(x, y)` coordinates
-/// — this is what circom-side Schnorr verifiers expect to see in their
-/// constraint systems too, so the on-chain / in-circuit story stays
-/// straightforward.
-fn challenge_inner(r: &EdwardsAffine, pk: &EdwardsAffine, m: Fq) -> Fq {
-    poseidon6(&[
+/// Arity 6 (1 domain + 5 payload) — fixed regardless of message
+/// length, by virtue of `message_hash` collapsing the message stream
+/// to one element upstream.
+fn challenge_inner(r: &EdwardsAffine, pk: &EdwardsAffine, m_hash: Fq) -> Fq {
+    poseidon_hash_fixed(
         domain_tag(CHALLENGE_DOMAIN),
-        r.x,
-        r.y,
-        pk.x,
-        pk.y,
-        m,
-    ])
+        &[r.x, r.y, pk.x, pk.y, m_hash],
+    )
+    .expect("challenge hash arity 6 is in range")
 }
 
 /// Reinterpret an `F_l` scalar in `F_p`. The scalar field order `l`
 /// (~251 bits) fits inside the base field `p` (~254 bits), so the
-/// reinterpretation is lossless: the same integer just lives in a
-/// larger field.
+/// reinterpretation is lossless.
 fn fr_to_fq(fr: &Fr) -> Fq {
     Fq::from_le_bytes_mod_order(&fr.into_bigint().to_bytes_le())
 }
 
-/// Reduce an `F_p` element into `F_l`. Used to fold a Poseidon output
-/// (in `F_p`) into a scalar suitable for scalar multiplication. The
-/// bias from this 254→251-bit reduction is ~2⁻²⁵¹ on Poseidon-uniform
-/// input — far below cryptographic relevance.
+/// Reduce an `F_p` element into `F_l`. The bias from `p` (254 bits)
+/// to `l` (251 bits) on Poseidon-uniform input is ~2⁻²⁵¹, far below
+/// cryptographic relevance.
 fn fq_to_fr(fq: &Fq) -> Fr {
     Fr::from_le_bytes_mod_order(&fq.into_bigint().to_bytes_le())
 }
@@ -187,97 +276,140 @@ mod tests {
         keypair_from_seed(&Seed::from_bytes(seed))
     }
 
-    /// The bread-and-butter test: sign-then-verify on a valid keypair
-    /// and message must accept.
+    /// Sign-then-verify on a valid keypair and a non-empty message
+    /// accepts. The bread-and-butter property.
     #[test]
     fn sign_then_verify_accepts() {
         let (sk, pk) = fixed_keypair();
-        let m = Fq::from(123456u64);
-        let sig = sign(&sk, &pk, m);
-        assert!(verify(&pk, m, &sig));
+        let m = [Fq::from(1u64), Fq::from(2u64), Fq::from(3u64)];
+        let sig = sign(&sk, &pk, &m).expect("valid length");
+        assert!(verify(&pk, &m, &sig).expect("valid length"));
     }
 
-    /// Determinism: same `(sk, m)` produces the exact same signature.
-    /// The load-bearing property of the deterministic-nonce design — if
-    /// this ever fails, nonce-reuse vulnerabilities walk in immediately.
+    /// Sign-then-verify on the empty message also accepts. Length-zero
+    /// is a well-defined message in this scheme.
+    #[test]
+    fn sign_then_verify_accepts_empty_message() {
+        let (sk, pk) = fixed_keypair();
+        let sig = sign(&sk, &pk, &[]).expect("empty is valid");
+        assert!(verify(&pk, &[], &sig).expect("empty is valid"));
+    }
+
+    /// Determinism: same `(sk, message)` produces the exact same
+    /// signature. Load-bearing for the deterministic-nonce design.
     #[test]
     fn signatures_are_deterministic() {
         let (sk, pk) = fixed_keypair();
-        let m = Fq::from(42u64);
-        let s1 = sign(&sk, &pk, m);
-        let s2 = sign(&sk, &pk, m);
+        let m = [Fq::from(42u64), Fq::from(99u64)];
+        let s1 = sign(&sk, &pk, &m).expect("ok");
+        let s2 = sign(&sk, &pk, &m).expect("ok");
         assert_eq!(s1, s2);
     }
 
-    /// Different messages → different signatures (different `R` and
-    /// different `s`). Catches a degenerate construction that doesn't
-    /// actually bind the message.
+    /// Different messages → different signatures.
     #[test]
     fn different_messages_yield_different_signatures() {
         let (sk, pk) = fixed_keypair();
-        let s1 = sign(&sk, &pk, Fq::from(1u64));
-        let s2 = sign(&sk, &pk, Fq::from(2u64));
-        assert_ne!(s1.r, s2.r, "different m must yield different R");
-        assert_ne!(s1.s, s2.s, "different m must yield different s");
+        let s1 = sign(&sk, &pk, &[Fq::from(1u64)]).expect("ok");
+        let s2 = sign(&sk, &pk, &[Fq::from(2u64)]).expect("ok");
+        assert_ne!(s1.r, s2.r);
+        assert_ne!(s1.s, s2.s);
     }
 
-    /// `R` is in the prime-order subgroup. Follows from `R = k · G`
-    /// where `G` is `Base8`; pinning it as a runtime check catches any
-    /// future refactor that produces off-subgroup commitments.
+    /// Different message *lengths* with overlapping content → different
+    /// signatures. Catches a degenerate scheme that would ignore length
+    /// (e.g. if the message hash were `Σ` or `XOR` of the elements).
+    #[test]
+    fn different_message_lengths_yield_different_signatures() {
+        let (sk, pk) = fixed_keypair();
+        let s1 = sign(&sk, &pk, &[Fq::from(1u64)]).expect("ok");
+        let s2 = sign(&sk, &pk, &[Fq::from(1u64), Fq::from(0u64)]).expect("ok");
+        assert_ne!(s1, s2);
+    }
+
+    /// `R` is in the prime-order subgroup.
     #[test]
     fn r_lives_in_prime_subgroup() {
         let (sk, pk) = fixed_keypair();
-        let sig = sign(&sk, &pk, Fq::from(99u64));
+        let sig = sign(&sk, &pk, &[Fq::from(99u64)]).expect("ok");
         assert!(is_in_prime_subgroup(&sig.r));
     }
 
-    /// Tamper with the message: verification must reject.
+    /// Tamper with the message: verification rejects.
     #[test]
     fn tampered_message_is_rejected() {
         let (sk, pk) = fixed_keypair();
-        let m = Fq::from(10u64);
-        let sig = sign(&sk, &pk, m);
-        assert!(!verify(&pk, Fq::from(11u64), &sig));
+        let m = [Fq::from(10u64), Fq::from(20u64)];
+        let m2 = [Fq::from(10u64), Fq::from(21u64)];
+        let sig = sign(&sk, &pk, &m).expect("ok");
+        assert!(!verify(&pk, &m2, &sig).expect("ok"));
     }
 
-    /// Tamper with the response scalar `s`: verification must reject.
+    /// Tamper with the response scalar `s`: verification rejects.
     #[test]
     fn tampered_s_is_rejected() {
         let (sk, pk) = fixed_keypair();
-        let m = Fq::from(10u64);
-        let mut sig = sign(&sk, &pk, m);
+        let m = [Fq::from(10u64)];
+        let mut sig = sign(&sk, &pk, &m).expect("ok");
         sig.s += Fr::from(1u64);
-        assert!(!verify(&pk, m, &sig));
+        assert!(!verify(&pk, &m, &sig).expect("ok"));
     }
 
-    /// Tamper with the commitment point `R`: verification must reject.
-    /// We use `2 · R` as a deterministic tamper — guaranteed in the
-    /// subgroup so it can't be rejected by a future on-the-wire
-    /// subgroup check ahead of verification.
+    /// Tamper with the commitment point `R`: verification rejects.
+    /// Use `2 · R` so the tampered point stays in the subgroup —
+    /// rules out a "rejected because off-subgroup" false positive.
     #[test]
     fn tampered_r_is_rejected() {
         let (sk, pk) = fixed_keypair();
-        let m = Fq::from(10u64);
-        let sig = sign(&sk, &pk, m);
-        let tampered_r = mul(&Fr::from(2u64), &sig.r);
+        let m = [Fq::from(10u64)];
+        let sig = sign(&sk, &pk, &m).expect("ok");
         let tampered = Signature {
-            r: tampered_r,
+            r: mul(&Fr::from(2u64), &sig.r),
             s: sig.s,
         };
-        assert!(!verify(&pk, m, &tampered));
+        assert!(!verify(&pk, &m, &tampered).expect("ok"));
     }
 
-    /// Wrong public key: verification must reject. (Otherwise the
-    /// signature isn't actually binding the signer.)
+    /// Wrong public key: verification rejects.
     #[test]
     fn verification_under_wrong_pk_is_rejected() {
         let (sk, pk) = fixed_keypair();
-        let m = Fq::from(10u64);
-        let sig = sign(&sk, &pk, m);
+        let m = [Fq::from(10u64)];
+        let sig = sign(&sk, &pk, &m).expect("ok");
 
         let mut other_seed = [0u8; 64];
         other_seed[0] = 99;
         let (_, other_pk) = keypair_from_seed(&Seed::from_bytes(other_seed));
-        assert!(!verify(&other_pk, m, &sig));
+        assert!(!verify(&other_pk, &m, &sig).expect("ok"));
+    }
+
+    /// A maximum-length message (11 elements) signs and verifies.
+    /// Pins the edge of the allowed range.
+    #[test]
+    fn max_length_message_signs_and_verifies() {
+        let (sk, pk) = fixed_keypair();
+        let m: Vec<Fq> = (1u64..=11).map(Fq::from).collect();
+        let sig = sign(&sk, &pk, &m).expect("11 elements is at the cap");
+        assert!(verify(&pk, &m, &sig).expect("ok"));
+    }
+
+    /// A 12-element message exceeds the cap; both sign and verify
+    /// return the typed length error. Catches the boundary.
+    #[test]
+    fn over_length_message_is_rejected_by_typed_error() {
+        let (sk, pk) = fixed_keypair();
+        let m: Vec<Fq> = (1u64..=12).map(Fq::from).collect();
+        assert!(matches!(
+            sign(&sk, &pk, &m),
+            Err(SchnorrError::MessageTooLong { len: 12, max: 11 }),
+        ));
+        // Use a known-good signature on a different message just to
+        // populate the `sig` argument; verify still errors on the
+        // length check before any signature math.
+        let good_sig = sign(&sk, &pk, &[]).expect("empty fits");
+        assert!(matches!(
+            verify(&pk, &m, &good_sig),
+            Err(SchnorrError::MessageTooLong { len: 12, max: 11 }),
+        ));
     }
 }
