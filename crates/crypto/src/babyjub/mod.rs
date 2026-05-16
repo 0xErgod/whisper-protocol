@@ -6,6 +6,7 @@
 //! curve *as a group* — keypairs, ECDH, commitments, and signatures are built
 //! in sibling modules on top of what is re-exported here.
 
+mod cipher;
 mod config;
 mod curve;
 mod ecdh;
@@ -15,6 +16,7 @@ mod pedersen;
 mod schnorr;
 mod wire;
 
+pub use cipher::{decrypt, encrypt, CIPHER_DOMAIN};
 pub use config::{BabyJubConfig, EdwardsAffine, EdwardsProjective, Fq, Fr};
 pub use curve::{generator, is_in_prime_subgroup, is_on_curve, mul, IDENTITY};
 pub use ecdh::shared_secret;
