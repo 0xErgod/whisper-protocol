@@ -55,6 +55,31 @@ fn honest_fixture() -> (
     (stream, blinding, commitment, claimed_first_value)
 }
 
+/// The spec's pinned commitment coordinates must match the
+/// native commitment computation. Pins the worked-example
+/// fixture in `specs/zk/circuit-pedersen-opens-to.md §
+/// Worked Example` against the actual Pedersen output.
+///
+/// If this test fails, either the spec's quoted decimals are
+/// wrong OR the native Pedersen generators drifted. Either way,
+/// the spec needs updating before any conformant verifier can
+/// deploy.
+#[test]
+fn worked_example_commitment_matches_spec() {
+    use ark_ff::PrimeField;
+    let (_, _, commitment, _) = honest_fixture();
+    assert_eq!(
+        commitment.x.into_bigint().to_string(),
+        "5897619111316274370769790191687306012343305332773391509514783004726110239420",
+        "commitment.x drifted from the spec's worked example",
+    );
+    assert_eq!(
+        commitment.y.into_bigint().to_string(),
+        "10670721326457331835290598050860396503551558481410756683820575574209654653921",
+        "commitment.y drifted from the spec's worked example",
+    );
+}
+
 /// End-to-end honest path: setup, prove, verify, accept.
 ///
 /// Establishes that every layer of the ZK stack is wired
