@@ -34,11 +34,10 @@
 //! pin — there is deliberately no auto-dispatch. See
 //! `specs/poseidon-hash-fixed.md` and `specs/poseidon-hash-sponge.md`.
 //!
-//! Legacy fixed-arity helpers [`poseidon3`] and [`poseidon6`] also live
-//! here — they predate the generic `poseidon_hash_fixed` and are kept
-//! for the existing keypair / Schnorr-v1 / Pedersen-v1 call sites that
-//! pin their exact arity at the call site. New code should reach for
-//! `poseidon_hash_fixed` instead.
+//! The legacy fixed-arity helper [`poseidon3`] also lives here — it
+//! predates the generic `poseidon_hash_fixed` and is kept for the
+//! keypair derivation, which pins its exact arity at the call site.
+//! New code should reach for `poseidon_hash_fixed` instead.
 //!
 //! The hash output is `Fq` (the BN254 scalar field, which is Baby
 //! Jubjub's base field), the same field the existing TypeScript
@@ -64,19 +63,6 @@ pub fn poseidon3(inputs: &[Fq; 3]) -> Fq {
     // (1..=16). Arity 3 is in range, so the `unwrap` is a domain assertion.
     let mut hasher = Poseidon::<Fq>::new_circom(3)
         .expect("circomlib Poseidon supports arity 3");
-    hasher
-        .hash(inputs)
-        .expect("Poseidon over fixed-arity field elements never fails")
-}
-
-/// Hash exactly six field elements with circomlib's Poseidon-BN254
-/// (arity 6, state size 7). Matches `poseidon-lite::poseidon6` and
-/// circom's `poseidon([_, _, _, _, _, _])`. Used by the Schnorr
-/// signature scheme's challenge hash:
-/// `Poseidon6(domain, R.x, R.y, PK.x, PK.y, m)`.
-pub fn poseidon6(inputs: &[Fq; 6]) -> Fq {
-    let mut hasher = Poseidon::<Fq>::new_circom(6)
-        .expect("circomlib Poseidon supports arity 6");
     hasher
         .hash(inputs)
         .expect("Poseidon over fixed-arity field elements never fails")
@@ -363,33 +349,7 @@ mod tests {
         assert_ne!(poseidon3(&[a, b, c]), poseidon3(&[c, b, a]));
     }
 
-    /// Same smoke checks for `poseidon6`: deterministic, non-trivial,
-    /// order-sensitive. Confirms the binding is wired through to the
-    /// arity-6 circomlib parameter set, not just the arity-3 one.
-    #[test]
-    fn poseidon6_is_deterministic_and_nontrivial() {
-        let z = Fq::ZERO;
-        let h = poseidon6(&[z, z, z, z, z, z]);
-        assert_eq!(h, poseidon6(&[z, z, z, z, z, z]));
-        assert_ne!(h, z);
-    }
-
-    #[test]
-    fn poseidon6_is_order_sensitive() {
-        let v = [
-            Fq::from(1u64),
-            Fq::from(2u64),
-            Fq::from(3u64),
-            Fq::from(4u64),
-            Fq::from(5u64),
-            Fq::from(6u64),
-        ];
-        let mut reversed = v;
-        reversed.reverse();
-        assert_ne!(poseidon6(&v), poseidon6(&reversed));
-    }
-
-    /// The domain-tag construction is deterministic and string-sensitive.
+/// The domain-tag construction is deterministic and string-sensitive.
     /// The exact field element for a given string is pinned in each
     /// primitive's spec/fixture, not here.
     #[test]
