@@ -27,9 +27,10 @@
 use wasm_bindgen_test::*;
 
 use crypto_wasm::{
-    ecdh, generator, kdf_derive, keypair_from_seed, mul_generator, pedersen_commit, pedersen_g,
-    pedersen_h, poseidon_hash_fixed, poseidon_hash_sponge, schnorr_sign, schnorr_verify,
-    text_utf8_v1_decode, text_utf8_v1_encode, text_utf8_v1_id, validate_point,
+    cipher_decrypt, cipher_encrypt, ecdh, generator, kdf_derive, keypair_from_seed, mul_generator,
+    pedersen_commit, pedersen_g, pedersen_h, poseidon_hash_fixed, poseidon_hash_sponge,
+    schnorr_sign, schnorr_verify, text_utf8_v1_decode, text_utf8_v1_encode, text_utf8_v1_id,
+    validate_point,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -918,5 +919,134 @@ fn kdf_rejects_invalid_inputs() {
     assert!(
         kdf_derive(ALICE_BOB_SHARED_X, ALICE_BOB_SHARED_Y, too_long).is_err(),
         "10-element context must throw",
+    );
+}
+
+// --- babyjub-cipher boundary --------------------------------------------
+//
+// Chains from the KDF fixture: the cipher key is Vector 2 of
+// `specs/babyjub-kdf.md` (envelope-cipher-key, envelope id 42). If
+// the KDF boundary drifts, the cipher boundary fails too — which is
+// the property we want.
+
+/// Cipher key for envelope 42 (KDF Vector 2). Reused across cipher
+/// vectors below.
+const CIPHER_KEY_ENVELOPE_42: &str =
+    "9799522521534548758133939899702695884003167902663631833387651174524282263857";
+
+/// MAC-role key for envelope 42 (KDF Vector 3). Used to pin
+/// key-dependence at the boundary.
+const MAC_KEY_ENVELOPE_42: &str =
+    "5302105009719633730025155498822445041452574923386899996802294480945238328306";
+
+/// Vector 1: empty plaintext encrypts to empty ciphertext across the
+/// boundary. Round-trips.
+#[wasm_bindgen_test]
+fn cipher_vector_1_empty_stream() {
+    let ct = cipher_encrypt(CIPHER_KEY_ENVELOPE_42, vec![]).expect("ok");
+    assert!(ct.is_empty());
+    let pt = cipher_decrypt(CIPHER_KEY_ENVELOPE_42, ct).expect("ok");
+    assert!(pt.is_empty());
+}
+
+/// Vector 2: single zero element. Ciphertext IS the keystream — pins
+/// `keystream_0` byte-for-byte at the boundary.
+#[wasm_bindgen_test]
+fn cipher_vector_2_single_zero() {
+    let ct = cipher_encrypt(CIPHER_KEY_ENVELOPE_42, vec!["0".into()]).expect("ok");
+    assert_eq!(
+        ct,
+        vec![
+            "10787321779190226554676337514347691875659477298610453494316095697639731105524"
+                .to_string(),
+        ],
+    );
+    let pt = cipher_decrypt(CIPHER_KEY_ENVELOPE_42, ct).expect("ok");
+    assert_eq!(pt, vec!["0".to_string()]);
+}
+
+/// Vector 3: small structured stream. Pins every ciphertext element.
+#[wasm_bindgen_test]
+fn cipher_vector_3_small_stream() {
+    let pt: Vec<String> = vec!["1".into(), "2".into(), "3".into(), "4".into()];
+    let ct = cipher_encrypt(CIPHER_KEY_ENVELOPE_42, pt.clone()).expect("ok");
+    assert_eq!(
+        ct,
+        vec![
+            "10787321779190226554676337514347691875659477298610453494316095697639731105525"
+                .to_string(),
+            "11005131623232030623906867189653141067415173065234117331769608574160093139922"
+                .to_string(),
+            "11791314040563090199526129580738560103220176213914809365331933459954108858858"
+                .to_string(),
+            "7865039964291077852173468667319105421171640084683400461629880408575490986497"
+                .to_string(),
+        ],
+    );
+    let back = cipher_decrypt(CIPHER_KEY_ENVELOPE_42, ct).expect("ok");
+    assert_eq!(back, pt);
+}
+
+/// Vector 4: 9-element stream. First four ciphertext elements MUST
+/// match Vector 3 — position-only keystream dependence at the
+/// boundary.
+#[wasm_bindgen_test]
+fn cipher_vector_4_nine_element_stream() {
+    let pt: Vec<String> = (1u64..=9).map(|i| i.to_string()).collect();
+    let ct = cipher_encrypt(CIPHER_KEY_ENVELOPE_42, pt.clone()).expect("ok");
+    assert_eq!(ct.len(), 9);
+    assert_eq!(
+        ct[0],
+        "10787321779190226554676337514347691875659477298610453494316095697639731105525",
+    );
+    assert_eq!(
+        ct[8],
+        "6187684344249448887322373286095556400810738367783748855733293931088165175507",
+    );
+    let back = cipher_decrypt(CIPHER_KEY_ENVELOPE_42, ct).expect("ok");
+    assert_eq!(back, pt);
+}
+
+/// Vector 5: same plaintext under MAC-role key — every ciphertext
+/// element MUST differ from Vector 3. Key-dependence pinned at the
+/// boundary.
+#[wasm_bindgen_test]
+fn cipher_vector_5_key_dependence() {
+    let pt: Vec<String> = vec!["1".into(), "2".into(), "3".into(), "4".into()];
+    let ct_enc = cipher_encrypt(CIPHER_KEY_ENVELOPE_42, pt.clone()).expect("ok");
+    let ct_mac = cipher_encrypt(MAC_KEY_ENVELOPE_42, pt).expect("ok");
+    assert_eq!(
+        ct_mac,
+        vec![
+            "16506928987906569383944781504684601770814262391889970105684093521341732525754"
+                .to_string(),
+            "7731186885346303069632096810963599601471099092800449051344926221212941321164"
+                .to_string(),
+            "16960104434118179033056841776385404401539280326058795617003206515921385327816"
+                .to_string(),
+            "9750714252119089106587215089218327748956786451850137551892779329943517333788"
+                .to_string(),
+        ],
+    );
+    for (a, b) in ct_enc.iter().zip(ct_mac.iter()) {
+        assert_ne!(a, b);
+    }
+}
+
+/// Boundary error contract: malformed key, plaintext, or ciphertext
+/// throws rather than silently producing wrong output.
+#[wasm_bindgen_test]
+fn cipher_rejects_invalid_inputs() {
+    assert!(
+        cipher_encrypt("abc", vec!["1".into()]).is_err(),
+        "garbage key must throw",
+    );
+    assert!(
+        cipher_encrypt(CIPHER_KEY_ENVELOPE_42, vec!["abc".into()]).is_err(),
+        "garbage plaintext element must throw",
+    );
+    assert!(
+        cipher_decrypt(CIPHER_KEY_ENVELOPE_42, vec!["-1".into()]).is_err(),
+        "signed ciphertext element must throw",
     );
 }

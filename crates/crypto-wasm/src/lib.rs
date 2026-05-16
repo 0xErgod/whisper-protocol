@@ -586,3 +586,52 @@ pub fn kdf_derive(
         .map_err(|e| JsError::new(&e.to_string()))?;
     Ok(key.into_bigint().to_string())
 }
+
+/// Encrypt a field-element stream under a symmetric key. See
+/// `specs/babyjub-cipher.md`.
+///
+/// `key` is a decimal-string `Fq` element (typically the output of
+/// `kdf_derive`). `plaintext` is a JS array of decimal-string field
+/// elements. Returns the ciphertext as a JS array of decimal strings,
+/// same length as the plaintext.
+///
+/// No length cap — the cipher iterates per element. The empty
+/// plaintext is valid and produces the empty ciphertext. A malformed
+/// input throws a JS exception.
+#[wasm_bindgen]
+pub fn cipher_encrypt(
+    key: &str,
+    plaintext: Vec<String>,
+) -> Result<Vec<String>, JsError> {
+    use ark_ff::PrimeField;
+
+    let k = fq_from_decimal(key, "key")?;
+    let pt = decimals_to_fields(plaintext)?;
+    let ct = babyjub::encrypt(k, &pt);
+    Ok(ct.iter().map(|f| f.into_bigint().to_string()).collect())
+}
+
+/// Decrypt a ciphertext stream under the same key used to encrypt
+/// it. See `specs/babyjub-cipher.md`.
+///
+/// `key` is a decimal-string `Fq` element. `ciphertext` is a JS array
+/// of decimal-string field elements. Returns the plaintext as a JS
+/// array of decimal strings, same length.
+///
+/// `decrypt` never errors on cryptographic grounds — it always
+/// returns a length-matched stream. Garbage in (wrong key, tampered
+/// ciphertext) produces garbage out; detecting that case is the
+/// MAC's job, not the cipher's. Only malformed boundary input
+/// (non-decimal strings) throws.
+#[wasm_bindgen]
+pub fn cipher_decrypt(
+    key: &str,
+    ciphertext: Vec<String>,
+) -> Result<Vec<String>, JsError> {
+    use ark_ff::PrimeField;
+
+    let k = fq_from_decimal(key, "key")?;
+    let ct = decimals_to_fields(ciphertext)?;
+    let pt = babyjub::decrypt(k, &ct);
+    Ok(pt.iter().map(|f| f.into_bigint().to_string()).collect())
+}
