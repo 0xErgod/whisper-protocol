@@ -1,0 +1,49 @@
+# NOTE(name): crate is published-internally as `gadgets` for now. The protocol's
+# public name is not yet decided — do NOT bake a product name into the crate
+# name, module paths, or type names. When the name lands, only this file and
+# the workspace member entry should need touching.
+[package]
+name = "gadgets"
+version = "0.1.0"
+edition = "2024"
+description = "R1CS gadgets mirroring the protocol's native cryptographic primitives, for Groth16 circuits."
+
+[dependencies]
+# The native primitives every gadget mirrors. Equivalence tests run the
+# native function on `Fq` and the gadget on `FpVar<Fq>` and assert they
+# agree; that requires gadgets to use the SAME `Fq` type the native crate
+# uses, which is enforced by depending on the same arkworks versions
+# workspace-wide (see `specs/zk/stack.md`).
+crypto = { path = "../crypto" }
+
+# BN254 base field = Baby Jubjub base field. `Fq` here is the same `Fq`
+# the native crate uses.
+ark-bn254 = "0.5"
+# Field + curve traits.
+ark-ff = "0.5"
+ark-ec = "0.5"
+# Baby Jubjub scalar field `Fr`. Pulled in for the same reason the
+# native `crypto` crate does: arkworks' verified scalar-field
+# constants for the subgroup order. We do NOT use this crate's
+# curve config — it ships the default `a = 1` Edwards dialect; our
+# `BabyJubConfig` overrides to circomlib's `a = 168700`.
+ark-ed-on-bn254 = "0.5"
+# Constraint-system plumbing: `ConstraintSystemRef`, `SynthesisError`,
+# `Namespace`.
+ark-relations = "0.5"
+# Gadget primitives: `FpVar`, `AllocVar`, `EqGadget`, `Boolean`,
+# `CondSelectGadget`.
+ark-r1cs-std = "0.5"
+# Canonical (de)serialization, used by tests.
+ark-serialize = "0.5"
+ark-std = "0.5"
+
+# Source of circomlib Poseidon round constants and MDS matrices. We do NOT
+# call its hasher — we use it strictly as the canonical parameter source
+# and reimplement the permutation against `FpVar<Fq>`. See
+# `specs/zk/stack.md § Poseidon parameters` for why arkworks-default
+# Poseidon is wrong here.
+light-poseidon = "0.3"
+
+[dev-dependencies]
+ark-std = { version = "0.5", features = ["std"] }

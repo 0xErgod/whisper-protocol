@@ -1,0 +1,43 @@
+# NOTE(name): crate is published-internally as `crypto` for now. The protocol's
+# public name is not yet decided — do NOT bake a product name (e.g. a "whisper*"
+# prefix) into the crate name, module paths, or type names. When the name lands,
+# only this file and the workspace member entry should need touching.
+[package]
+name = "crypto"
+version = "0.1.0"
+edition = "2024"
+description = "Provable-protocol cryptographic primitives: Baby Jubjub curve, keypairs, commitments, signatures."
+
+[dependencies]
+# BN254 scalar field = Baby Jubjub base field. `ark-bn254` gives us `Fr`, the
+# field every circuit is proved over later.
+ark-bn254 = "0.5"
+# Field + curve traits: `PrimeField`, `Field`, `CurveGroup`, `AffineRepr`,
+# twisted-Edwards model traits (`TECurveConfig`), canonical (de)serialization.
+ark-ff = "0.5"
+ark-ec = "0.5"
+ark-serialize = "0.5"
+# We do NOT use this crate's curve config — its default `a = 1` dialect is
+# incompatible with circomlib/ERC-2494 (see `babyjub/config.rs`). We pull it in
+# solely for its scalar field type `Fr`: the Baby Jubjub subgroup order is
+# paper-fixed and identical across both dialects, so reusing arkworks' verified
+# field constants beats transcribing them by hand.
+ark-ed-on-bn254 = "0.5"
+# RNG plumbing for keypair generation. `ark-std` re-exports a `rand`-compatible
+# surface that the arkworks APIs expect.
+ark-std = "0.5"
+# circomlib-compatible Poseidon over BN254. arkworks' own `PoseidonSponge`
+# does NOT match circomlib's round constants / MDS matrix by default; this
+# crate's `Poseidon::<Fr>::new_circom(arity)` does, and matches the TS side's
+# `poseidon-lite`. Audited by Veridise. See `specs/poseidon-commitment-format.md`
+# for the existing TS-side rationale; the same applies here.
+light-poseidon = "0.3"
+# `Blake2b256(domain_string) mod p` is the domain-tag construction the protocol
+# already uses on the TS side; reusing it here keeps the spec coherent.
+blake2 = "0.10"
+
+[dev-dependencies]
+hex = "0.4"
+# Used only by the curve fixture test to compare `Fq::MODULUS` against the
+# spec's base-field prime (which can't be written as a field literal).
+num-bigint = "0.4"

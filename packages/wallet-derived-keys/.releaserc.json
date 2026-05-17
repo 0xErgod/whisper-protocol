@@ -14,10 +14,14 @@
           { "scope": "wallet-derived-keys", "type": "refactor", "release": "patch" },
           { "scope": "wallet-derived-keys", "breaking": true, "release": "major" },
           { "scope": "sdk", "release": false },
+          { "scope": "apps", "release": false },
           { "scope": "web", "release": false },
+          { "scope": "crypto", "release": false },
+          { "scope": "crypto-wasm", "release": false },
           { "scope": "ci", "release": false },
           { "scope": "deps", "release": false },
-          { "scope": "release", "release": false }
+          { "scope": "release", "release": false },
+          { "release": false }
         ]
       }
     ],

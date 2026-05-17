@@ -1,0 +1,25 @@
+{
+  "name": "curve-viz",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Baby Jubjub curve visualization — creative-coding intuition for the protocol's curve world.",
+  "scripts": {
+    "wasm": "wasm-pack build ../../crates/crypto-wasm --target web --out-dir pkg --out-name crypto_wasm --release",
+    "predev": "pnpm run wasm",
+    "dev": "vite",
+    "prebuild": "pnpm run wasm",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "crypto-wasm": "link:../../crates/crypto-wasm/pkg"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.0.1",
+    "vite-plugin-top-level-await": "^1.4.4",
+    "vite-plugin-wasm": "^3.4.0"
+  }
+}

@@ -468,10 +468,12 @@ In rough order of payoff:
 
 ## Migration from the Current PoC
 
-The current code derives X25519 directly from Ed25519 seeds in
-[web/src/crypto/identities.ts](../web/src/crypto/identities.ts) and
-[crates/secret-sharing-cli/src/env_keys.rs](../crates/secret-sharing-cli/src/env_keys.rs).
-Replacing this is a localized change:
+The earlier X25519/ChaCha PoC derived X25519 directly from Ed25519
+seeds in a `web/src/crypto/identities.ts` module and a now-removed
+`crates/secret-sharing-cli` Rust binary (deleted as the workspace
+moved to the Baby Jubjub + Groth16 stack). The migration shape
+documented here applies the same way to any future caller that
+still does direct Ed25519→X25519 derivation:
 
 1. Add a `deriveKeypairViaWalletSignature(suiAddress)` helper that builds
    the canonical message, calls `signPersonalMessage`, runs HKDF, and

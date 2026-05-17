@@ -1,0 +1,28 @@
+{
+  "name": "zk-playground",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "ZK playground — drives prover-wasm in the browser against the running prover-server. Mirrors apps/curve's panels-per-primitive shape, but each panel is a circuit (prove + verify end-to-end).",
+  "scripts": {
+    "wasm": "wasm-pack build ../../crates/prover-wasm --target web --out-dir pkg --out-name prover_wasm --release",
+    "predev": "pnpm run wasm",
+    "dev": "vite",
+    "prebuild": "pnpm run wasm",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "pretest": "pnpm run build",
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "prover-wasm": "link:../../crates/prover-wasm/pkg"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.1",
+    "vite-plugin-top-level-await": "^1.4.4",
+    "vite-plugin-wasm": "^3.4.0"
+  }
+}

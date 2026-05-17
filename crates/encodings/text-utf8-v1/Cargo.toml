@@ -1,0 +1,16 @@
+# NOTE(name): working name. This crate is one (canonical) implementation of
+# the `text-utf8-v1` byte payload encoding. The spec lives at
+# `specs/encodings/text-utf8-v1.md`; the encoding-id is derived from that
+# path via `crypto::encoding::id::encoding_id`.
+[package]
+name = "text-utf8-v1"
+version = "0.1.0"
+edition = "2024"
+description = "text-utf8-v1: UTF-8 byte payload encoding (≤248 bytes) into a 9-element field stream."
+
+[dependencies]
+# The trait, the typed FieldStream, and the id-derivation rule all live in
+# the core `crypto` crate. Encoding crates are pure consumers of that
+# interface.
+crypto = { path = "../../crypto" }
+ark-ff = "0.5"

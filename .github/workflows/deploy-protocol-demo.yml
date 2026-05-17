@@ -1,0 +1,82 @@
+name: deploy-protocol-demo
+
+# Builds the protocol demo dApp (apps/protocol) and deploys it to
+# GitHub Pages on every push to main. The deployed dApp talks to
+# public Sui testnet RPC, so anyone with a Sui wallet can click
+# through and use the demo without any of our infrastructure.
+#
+# Pages source must be set to "GitHub Actions" in
+# Settings → Pages → Source for this workflow to actually publish.
+# The first run is what causes the URL to start serving content.
+#
+# We don't deploy on PRs — only the main-branch deploy is the canonical
+# one at https://0xergod.github.io/whisper-protocol/. Forks publishing
+# to their own attacker.github.io domain is the trade-off for being a
+# public static site; users have to trust the canonical URL.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  # Required by actions/deploy-pages — exchanges the run's identity for
+  # a short-lived Pages deployment token, same OIDC pattern we use for
+  # the npm release workflow.
+  id-token: write
+
+# Only one Pages deploy can be in-flight per repo. Cancel any older
+# in-progress deploy when a new push arrives so the freshest commit
+# wins.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      # The web app imports @whisper-protocol/sdk + @whisper-protocol/
+      # wallet-derived-keys via the workspace `link:` protocol, so they
+      # resolve to the package source dirs. TypeScript and Vite both
+      # need the packages' compiled `dist/` to exist before the web
+      # build can resolve their type declarations and entry points.
+      - name: build sdk packages first
+        run: pnpm -r --filter "./packages/*" run build
+
+      - name: build protocol demo with pages base path
+        env:
+          # Tells vite.config.ts to emit `<script src="/whisper-protocol/...">`
+          # so the bundle resolves correctly under the project-pages URL.
+          VITE_PAGES_BASE: /whisper-protocol/
+        run: pnpm --filter protocol-demo run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/protocol/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

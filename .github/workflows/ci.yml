@@ -41,11 +41,11 @@ jobs:
       - name: build packages
         run: pnpm -r --filter "./packages/*" run build
 
-      - name: typecheck web
-        run: pnpm --filter whisper-web run typecheck
+      - name: typecheck protocol demo
+        run: pnpm --filter protocol-demo run typecheck
 
-      - name: build web
-        run: pnpm --filter whisper-web run build
+      - name: build protocol demo
+        run: pnpm --filter protocol-demo run build
 
   rust:
     name: rust cli check

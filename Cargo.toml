@@ -1,3 +1,13 @@
 [workspace]
-members = ["crates/secret-sharing-cli"]
+members = [
+    "crates/crypto",
+    "crates/crypto-wasm",
+    "crates/encodings/text-utf8-v1",
+    "crates/gadgets",
+    "crates/circuits",
+    "crates/prover",
+    "crates/prover-server",
+    "crates/prover-wasm",
+    "crates/protocol",
+]
 resolver = "3"

@@ -1,0 +1,29 @@
+# NOTE(name): crate is published-internally as `protocol` for now. The
+# protocol's public name is not yet decided — do NOT bake a product name into
+# the crate name, module paths, or type names. When the name lands, only this
+# file and the workspace member entry should need touching.
+[package]
+name = "protocol"
+version = "0.1.0"
+edition = "2024"
+description = "Protocol-level compositions of the native cryptographic primitives: envelopes, commitments, future handshakes."
+
+[dependencies]
+# The native primitives every composition is built on. The
+# protocol crate adds NO cryptographic logic — it pins
+# composition order (encrypt-then-MAC, role tags, field
+# ordering) and exposes data-transfer types matching the
+# spec contracts.
+crypto = { path = "../crypto" }
+
+# Field types and traits used in the envelope's typed API.
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+ark-ed-on-bn254 = "0.5"
+
+# Typed errors at the protocol API boundary (open distinguishes
+# WrongRecipient from MacFailure, etc.).
+thiserror = "1"
+
+[dev-dependencies]
+ark-std = { version = "0.5", features = ["std"] }

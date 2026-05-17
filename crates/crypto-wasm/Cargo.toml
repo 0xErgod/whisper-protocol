@@ -1,0 +1,51 @@
+# NOTE(name): working name `crypto-wasm` — the WASM binding face of the
+# `crypto` crate. No product name baked in; a rename touches this file, the
+# workspace member entry, and the `pkg` name consumed by `apps/`.
+[package]
+name = "crypto-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "WASM bindings for the crypto crate: thin Uint8Array/string-boundary wrappers, zero logic."
+
+[lib]
+# `cdylib` is the crate type wasm-bindgen / wasm-pack compile to a `.wasm`
+# module. `rlib` is kept so the crate can still be unit-tested natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The single source of truth. This crate adds NO cryptographic logic — it only
+# re-shapes `crypto`'s already-tested API for the JS boundary.
+crypto = { path = "../crypto" }
+# Encoding crates are pure consumers of `crypto`'s `BytePayloadEncoding`
+# trait. Adding a new encoding to the WASM surface is one new dependency
+# here plus one new pair of `encode_<name>` / `decode_<name>` exports.
+text-utf8-v1 = { path = "../encodings/text-utf8-v1" }
+wasm-bindgen = "0.2"
+# Needed for `PrimeField::into_bigint()` when rendering `Fq` field
+# elements as decimal strings at the boundary. Doesn't add new logic
+# — just re-uses the bigint conversion already pulled in by `crypto`.
+ark-ff = "0.5"
+
+[dependencies.getrandom]
+# arkworks' RNG path pulls in `getrandom`. On `wasm32-unknown-unknown` it has
+# no OS entropy source by default and the build fails; the `js` feature routes
+# it through the browser's `crypto.getRandomValues`. The curve viz does not
+# itself generate randomness, but `crypto` links arkworks code paths that
+# reference `getrandom`, so the feature must be enabled at the final artifact.
+version = "0.2"
+features = ["js"]
+
+[dev-dependencies]
+# `wasm-bindgen-test` runs the boundary tests in a real (headless) browser via
+# `wasm-pack test` — the only way to exercise the actual JS<->WASM edge rather
+# than a native approximation of it.
+wasm-bindgen-test = "0.3"
+
+# `wasm-opt` is the size-shrinking post-pass that `wasm-pack` runs by default.
+# Disable it: on Windows the bundled wasm-opt fails on arkworks-heavy output
+# (the `wasm-opt --` invocation exits non-zero), and the optimization is a
+# size win, not a correctness step. The resulting `.wasm` is ~2 MB unoptimized
+# vs ~700 KB optimized — acceptable for the dev/viz consumer and easy to
+# revisit if size matters for a production deployment.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

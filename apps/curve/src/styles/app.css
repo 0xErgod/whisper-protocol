@@ -1,0 +1,208 @@
+/*
+ * Curve-viz layout, built in the same idiom as `apps/protocol/src/styles/app.css`.
+ * Tokens come from `tokens.css`; this file is layout and per-component rules
+ * only — no colors that aren't a token.
+ */
+
+.app {
+  max-width: 100ch;
+  margin: 0 auto;
+  padding: 2rem 2ch 6rem;
+}
+
+.app-header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.app-title {
+  font-size: 1.1rem;
+  letter-spacing: 0.5ch;
+  text-transform: uppercase;
+  margin: 0 0 0.5rem;
+  color: var(--brand);
+}
+
+.app-sub {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.app-meta {
+  margin-top: 0.75rem;
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  display: flex;
+  gap: 3ch;
+  flex-wrap: wrap;
+}
+
+.app-meta strong {
+  color: var(--text-dim);
+  font-weight: normal;
+}
+
+.section {
+  margin-top: 2rem;
+}
+
+.section-title {
+  font-size: 0.85rem;
+  letter-spacing: 0.3ch;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 0.75rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+/*
+ * A panel is the standard "bordered elevated surface" — same recipe the
+ * protocol app uses for its identity bar / feed cards. Canvas left, aside
+ * right; on narrower screens they stack.
+ */
+.panel {
+  display: flex;
+  gap: 2ch;
+  align-items: flex-start;
+  padding: 1rem 1.5ch;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.panel canvas {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.panel aside {
+  flex: 1;
+  min-width: 28ch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.panel .blurb {
+  color: var(--text-dim);
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+/* Controls row: label + slider + value, or label + button. Same layout
+ * pattern as the protocol app's `compose` rows. */
+.controls {
+  display: flex;
+  gap: 1ch;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.controls label {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  letter-spacing: 0.2ch;
+  text-transform: uppercase;
+}
+
+.controls input[type="range"] {
+  flex: 1;
+  min-width: 16ch;
+  accent-color: var(--brand);
+}
+
+.controls .val {
+  color: var(--brand);
+  min-width: 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hex seed textarea — pure terminal feel: bordered, mono, scrolly. */
+textarea.seed {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  padding: 0.4rem 1ch;
+  font: inherit;
+  font-size: 0.78rem;
+  resize: vertical;
+  min-height: 4.4rem;
+  word-break: break-all;
+}
+
+textarea.seed:focus {
+  outline: none;
+  border-color: var(--brand-dim);
+}
+
+/* The readout block — small, labelled key/value rows; same pattern as the
+ * protocol app's meta tables. */
+.readout {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  padding: 0.6rem 1ch;
+  font-size: 0.8rem;
+}
+
+.readout .row {
+  display: flex;
+  gap: 1ch;
+  align-items: baseline;
+  padding: 2px 0;
+}
+
+.readout .label {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  letter-spacing: 0.15ch;
+  text-transform: uppercase;
+  min-width: 9ch;
+}
+
+.readout code {
+  color: var(--text);
+  font: inherit;
+  word-break: break-all;
+}
+
+.readout .k {
+  color: var(--brand);
+}
+
+.readout .coord {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--text);
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+/* Symmetry line for the ECDH panel: a one-liner that turns green when
+ * `sk_A·PK_B == sk_B·PK_A` and red if it ever drifts. Uses the shared
+ * `--ok` / `--bad` semantic tokens. */
+.readout .symmetry {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+.readout .symmetry.ok  { color: var(--ok); }
+.readout .symmetry.bad { color: var(--bad); }
+
+.readout .error {
+  color: var(--bad);
+}
+
+footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 0.8rem;
+}

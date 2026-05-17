@@ -29,7 +29,6 @@ You will need a Sui wallet (Slush, Suiet, etc.) set to **Testnet**. The demo der
 
 ```
 contracts/                              # Move package — published to localnet/testnet/mainnet
-crates/secret-sharing-cli/              # Rust CLI for scripted demos (internal, not published)
 packages/
   sdk/                                  # @whisper-protocol/sdk — encrypt, decrypt, build txs
   wallet-derived-keys/                  # @whisper-protocol/wallet-derived-keys — wallet-signature key derivation

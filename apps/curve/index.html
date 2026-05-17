@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>curve world — baby jubjub viz</title>
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <link rel="stylesheet" href="/src/styles/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1 class="app-title">curve world</h1>
+        <p class="app-sub">
+          three live consumers of the same Rust → WASM → TypeScript baby jubjub chain,
+          anchored to the same <code>specs/babyjub-*.md</code> contracts the rust tests pin.
+        </p>
+        <div class="app-meta">
+          <span><strong>curve</strong> baby jubjub (ERC-2494 dialect)</span>
+          <span><strong>field</strong> BN254 scalar (254 bits)</span>
+          <span><strong>generator</strong> Base8</span>
+        </div>
+      </header>
+
+      <!-- Panel 1: the cyclic walk -->
+      <section class="section">
+        <h2 class="section-title">the walk</h2>
+        <div class="panel">
+          <canvas id="stage-walk" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              scalar multiples <code>1·G, 2·G, 3·G, …</code> as a connected path.
+              the scatter <em>is</em> the discrete-log hardness — there is no way
+              to read off the scalar from where the point lands.
+            </p>
+            <div class="controls">
+              <label for="steps">steps</label>
+              <input id="steps" type="range" min="1" max="512" value="64" />
+              <span class="val" id="steps-val">64</span>
+            </div>
+            <div class="readout" id="readout-walk">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Panel 2: keypair playground -->
+      <section class="section">
+        <h2 class="section-title">keypair playground</h2>
+        <div class="panel">
+          <canvas id="stage-keypair" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              a 64-byte seed in, the derived public key <code>PK = sk·Base8</code>
+              plotted on the curve. same primitive a wallet-derived path will
+              use — randomness is the caller's problem, the derivation is
+              byte-exact.
+            </p>
+            <div class="controls">
+              <button id="seed-random">randomize seed</button>
+            </div>
+            <textarea
+              id="seed-input"
+              class="seed"
+              spellcheck="false"
+              rows="2"
+              aria-label="seed (128 hex chars)"
+            ></textarea>
+            <div class="readout" id="readout-keypair">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Panel 3: ECDH demo -->
+      <section class="section">
+        <h2 class="section-title">ecdh shared point</h2>
+        <div class="panel">
+          <canvas id="stage-ecdh" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              two seeds (alice, bob) → two keypairs → one shared point. the
+              faint lines suggest "both parties walk to the same place." the
+              symmetry <code>sk_A·PK_B == sk_B·PK_A</code> is asserted at the
+              byte level — green when it holds.
+            </p>
+            <div class="controls">
+              <button id="ecdh-random">new pair of seeds</button>
+            </div>
+            <div class="readout" id="readout-ecdh">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Panel 4: Pedersen commitments -->
+      <section class="section">
+        <h2 class="section-title">pedersen commitments</h2>
+        <div class="panel">
+          <canvas id="stage-pedersen" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              two streams of field elements + two blindings → three
+              commitments. the protocol's <em>element-wise</em>
+              additive-homomorphism contract:
+              <code>C(a, r_a) + C(b, r_b) ≡ C(a + b, r_a + r_b)</code>
+              where <code>a + b</code> is the element-wise sum. each
+              stream position has its own pinned generator
+              <code>G_i</code>, so a future ZK predicate can prove "the
+              i-th element is X" without touching the others. enter
+              streams as comma-separated decimals.
+            </p>
+            <div class="controls">
+              <label for="pedersen-stream-a">stream a</label>
+              <input id="pedersen-stream-a" type="text" value="10, 20, 30" />
+            </div>
+            <div class="controls">
+              <label for="pedersen-stream-b">stream b</label>
+              <input id="pedersen-stream-b" type="text" value="5, 15, 25" />
+            </div>
+            <div class="controls">
+              <label for="pedersen-blinding-a">r_a</label>
+              <input id="pedersen-blinding-a" type="text" value="100" />
+              <label for="pedersen-blinding-b">r_b</label>
+              <input id="pedersen-blinding-b" type="text" value="200" />
+              <button id="pedersen-random">random r</button>
+            </div>
+            <div class="readout" id="readout-pedersen">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Panel 5: Schnorr signatures -->
+      <section class="section">
+        <h2 class="section-title">schnorr signatures</h2>
+        <div class="panel">
+          <canvas id="stage-schnorr" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              sign a stream-shaped message with a randomized seed. the
+              message is a comma-separated list of field elements
+              (length 0..11); the signature is <code>(R, s)</code>. the
+              panel plots <code>PK</code> and <code>R</code> and
+              verifies <code>s·G == R + c·PK</code> in-page. the
+              <strong>tamper</strong> button adds 1 to <code>s</code>
+              mod <code>l</code> to demo the rejection path — when
+              tampered, the verification line turns red and the
+              connecting stroke follows.
+            </p>
+            <div class="controls">
+              <label for="schnorr-message">message</label>
+              <input id="schnorr-message" type="text" value="0, 1, 2, 3, 4, 5, 6, 7, 8" />
+            </div>
+            <div class="controls">
+              <button id="schnorr-random">new signer seed</button>
+              <button id="schnorr-tamper">tamper / restore</button>
+            </div>
+            <div class="readout" id="readout-schnorr">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Panel 6: text-utf8-v1 encoding -->
+      <section class="section">
+        <h2 class="section-title">text-utf8-v1 encoding</h2>
+        <div class="panel">
+          <canvas id="stage-encoding" width="420" height="420"></canvas>
+          <aside>
+            <p class="blurb">
+              type text → see the 9-element field stream → round-trip back
+              to bytes. <code>f_0</code> is the length prefix in bytes
+              (shown as a bar against the 248-byte max); <code>f_1..f_8</code>
+              are 31-byte chunks (bright when non-zero, dim when zero-padded).
+              the symmetry line confirms decode(encode(bytes)) ≡ bytes — the
+              load-bearing round-trip invariant pinned in
+              <code>specs/encodings/text-utf8-v1.md</code>.
+            </p>
+            <textarea
+              id="encoding-text"
+              class="seed"
+              spellcheck="false"
+              rows="3"
+              aria-label="text payload (≤ 248 bytes)"
+            ></textarea>
+            <div class="readout" id="readout-encoding">initializing…</div>
+          </aside>
+        </div>
+      </section>
+
+      <footer>
+        curve math: <code>crates/crypto</code> (rust) → <code>crates/crypto-wasm</code> → this app.
+        contracts: <code>specs/babyjub-curve.md</code>, <code>specs/babyjub-keypair.md</code>,
+        <code>specs/babyjub-ecdh.md</code>, <code>specs/babyjub-pedersen.md</code>,
+        <code>specs/babyjub-schnorr.md</code>,
+        <code>specs/encodings/text-utf8-v1.md</code>.
+      </footer>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
