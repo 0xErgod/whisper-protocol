@@ -20,7 +20,8 @@
           { "scope": "crypto-wasm", "release": false },
           { "scope": "ci", "release": false },
           { "scope": "deps", "release": false },
-          { "scope": "release", "release": false }
+          { "scope": "release", "release": false },
+          { "release": false }
         ]
       }
     ],
