@@ -73,11 +73,13 @@ fn verify_honest_proof_accepts() {
 #[wasm_bindgen_test]
 fn verify_rejects_tampered_public_inputs() {
     // Same shape as PUBLIC_JSON but with a different
-    // claimed_first_value.
+    // claimed_first_value. The real encoding_id is kept so only
+    // the claim differs.
     let tampered = format!(
-        r#"{{"commitment_x":"{cx}","commitment_y":"{cy}","claimed_first_value":"99"}}"#,
+        r#"{{"commitment_x":"{cx}","commitment_y":"{cy}","encoding_id":"{eid}","claimed_first_value":"99"}}"#,
         cx = parse_field(PUBLIC_JSON, "commitment_x"),
         cy = parse_field(PUBLIC_JSON, "commitment_y"),
+        eid = parse_field(PUBLIC_JSON, "encoding_id"),
     );
     let accepted =
         verify_pedersen_opens_to(&tampered, PROOF_BYTES, VK_BYTES).expect("verify ok");

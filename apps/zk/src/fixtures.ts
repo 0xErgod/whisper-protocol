@@ -25,6 +25,7 @@
 export interface PedersenOpensToInputs {
   commitment_x: string;
   commitment_y: string;
+  encoding_id: string;
   claimed_first_value: string;
   stream: [string, string, string, string, string, string, string, string, string];
   blinding: string;
@@ -34,15 +35,22 @@ export interface PedersenOpensToInputs {
 export interface PedersenOpensToPublicInputs {
   commitment_x: string;
   commitment_y: string;
+  encoding_id: string;
   claimed_first_value: string;
 }
 
-/** Canonical pedersen_opens_to fixture (stream [10..90], blinding 12345). */
+/**
+ * Canonical pedersen_opens_to fixture (stream [10..90], blinding
+ * 12345, text-utf8-v1 encoding id). The commitment is over the
+ * augmented [encoding_id, ...stream], matching protocol::commitment.
+ */
 export const PEDERSEN_FIXTURE: PedersenOpensToInputs = {
   commitment_x:
-    "5897619111316274370769790191687306012343305332773391509514783004726110239420",
+    "14178428728361130724833880240122318573449800233918657877722353700842024882875",
   commitment_y:
-    "10670721326457331835290598050860396503551558481410756683820575574209654653921",
+    "19246693951740292838985087626008218915644570097536058114244575946261704440826",
+  encoding_id:
+    "10251905648233427808659162032937842155138269080868533503078341140126603942221",
   claimed_first_value: "10",
   stream: ["10", "20", "30", "40", "50", "60", "70", "80", "90"],
   blinding: "12345",
@@ -58,6 +66,7 @@ export interface EnvelopeOpenAt0Inputs {
   recipient_pk_x: string;
   recipient_pk_y: string;
   envelope_id: string;
+  encoding_id: string;
   ciphertext: [string, string, string, string, string, string, string, string, string];
   mac_tag: string;
 }
@@ -78,7 +87,7 @@ export interface EnvelopeOpenAt0PublicInputs {
  */
 export const ENVELOPE_FIXTURE: EnvelopeOpenAt0Inputs = {
   signal:
-    "14216739468404985402435909686258621593128282925461613727791220948822683472271",
+    "6217333408759767397651363326396230716363569755863458852918341719635726940429",
   claimed_value: "1",
   recipient_sk:
     "2731702875519064002290362656202589349494796443482268838874720774092641752720",
@@ -91,6 +100,8 @@ export const ENVELOPE_FIXTURE: EnvelopeOpenAt0Inputs = {
   recipient_pk_y:
     "17118641971790752267450378861266165944315881057953088539621212593641527445102",
   envelope_id: "42",
+  encoding_id:
+    "10251905648233427808659162032937842155138269080868533503078341140126603942221",
   ciphertext: [
     "10787321779190226554676337514347691875659477298610453494316095697639731105525",
     "11005131623232030623906867189653141067415173065234117331769608574160093139922",
@@ -103,7 +114,7 @@ export const ENVELOPE_FIXTURE: EnvelopeOpenAt0Inputs = {
     "6187684344249448887322373286095556400810738367783748855733293931088165175507",
   ],
   mac_tag:
-    "12163750248080380253034706583394113333590247041303092409087302249084589421920",
+    "7398943834207946599435298367371708282541003530546881690116239308373972876185",
 };
 
 /** Project the public-input subset from a full Inputs struct. */
@@ -111,6 +122,7 @@ export function pedersenPublic(i: PedersenOpensToInputs): PedersenOpensToPublicI
   return {
     commitment_x: i.commitment_x,
     commitment_y: i.commitment_y,
+    encoding_id: i.encoding_id,
     claimed_first_value: i.claimed_first_value,
   };
 }

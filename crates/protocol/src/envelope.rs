@@ -33,6 +33,7 @@ use crypto::babyjub::{
     decrypt, encrypt, kdf_derive, mac_compute, mac_verify, shared_secret, EdwardsAffine, Fq,
     PublicKey, SecretKey,
 };
+use crypto::encoding::Payload;
 use crypto::poseidon::domain_tag;
 
 /// Encryption-key role tag.
@@ -49,7 +50,7 @@ pub const CIPHER_ROLE: &str = "envelope-cipher-key";
 /// derivation discipline.
 pub const MAC_ROLE: &str = "envelope-mac-key";
 
-/// An authenticated envelope. Five fields, all public; nothing
+/// An authenticated envelope. Six fields, all public; nothing
 /// in here is sensitive on its own. The sender's `sk_a` and the
 /// recipient's `sk_b` are the only things that can recover the
 /// plaintext, and neither is part of the struct.
@@ -57,11 +58,21 @@ pub const MAC_ROLE: &str = "envelope-mac-key";
 /// ## On `Vec<Fq>` for ciphertext
 ///
 /// The cipher is length-preserving; `ciphertext.len() ==
-/// plaintext.len()`. We use `Vec<Fq>` rather than a fixed-size
-/// array because envelope plaintexts have variable length —
-/// `text-utf8-v1` is 9 elements today, but future encodings
-/// will produce different shapes, and the envelope must accept
-/// any of them.
+/// payload.stream.len()`. We use `Vec<Fq>` rather than a
+/// fixed-size array because envelope payloads have variable
+/// length — `text-utf8-v1` is 9 elements today, but future
+/// encodings will produce different shapes, and the envelope
+/// must accept any of them.
+///
+/// ## On `encoding_id`
+///
+/// The id of the encoding that produced the sealed payload's
+/// stream. **Public metadata** (a recipient needs it before
+/// decrypting, to pick a decoder) but **authenticated** — it is
+/// folded into the MAC input, so tampering with it breaks the
+/// MAC and `open` rejects. See
+/// [`specs/protocol-envelope.md`](../../specs/protocol-envelope.md)
+/// and [`specs/encodings/payload.md`](../../specs/encodings/payload.md).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
     /// The sender's public key. Public; allows the recipient
@@ -78,12 +89,26 @@ pub struct Envelope {
     /// see the spec's [§ Composition order] for the
     /// uniqueness rationale.
     pub envelope_id: Fq,
-    /// The cipher's output. Length matches the plaintext's
+    /// The registry id of the encoding that produced the sealed
+    /// payload's stream. Public, but bound by the MAC.
+    pub encoding_id: Fq,
+    /// The cipher's output. Length matches the payload stream's
     /// length.
     pub ciphertext: Vec<Fq>,
-    /// The MAC tag over `ciphertext` under the MAC-role key.
-    /// One field element; one Poseidon sponge call to verify.
+    /// The MAC tag over `[encoding_id, ...ciphertext]` under the
+    /// MAC-role key. One field element; one Poseidon sponge call
+    /// to verify.
     pub mac_tag: Fq,
+}
+
+/// Build the MAC input `[encoding_id, ...ciphertext]`. Internal
+/// helper so the "encoding id is folded into the MAC" rule lives
+/// in exactly one place, shared by [`seal`] and [`open`].
+fn mac_input(encoding_id: Fq, ciphertext: &[Fq]) -> Vec<Fq> {
+    let mut input = Vec::with_capacity(1 + ciphertext.len());
+    input.push(encoding_id);
+    input.extend_from_slice(ciphertext);
+    input
 }
 
 /// Why [`open`] rejected an envelope.
@@ -105,7 +130,7 @@ pub enum OpenError {
     MacFailure,
 }
 
-/// Seal a plaintext into an envelope.
+/// Seal a payload into an envelope.
 ///
 /// Mirrors [`specs/protocol-envelope.md § Sealing`](../../specs/protocol-envelope.md):
 ///
@@ -113,9 +138,17 @@ pub enum OpenError {
 /// shared       = ecdh(sender_sk, recipient_pk)
 /// key_enc      = kdf(shared, [ENC_ROLE_TAG, envelope_id])
 /// key_mac      = kdf(shared, [MAC_ROLE_TAG, envelope_id])
-/// ciphertext   = cipher.encrypt(key_enc, plaintext)
-/// mac_tag      = mac.mac(key_mac, ciphertext)
+/// ciphertext   = cipher.encrypt(key_enc, payload.stream)
+/// mac_tag      = mac.mac(key_mac, [payload.encoding_id, ...ciphertext])
 /// ```
+///
+/// The payload's `encoding_id` becomes a public envelope field
+/// AND is folded into the MAC input — public so the recipient
+/// can pick a decoder before decrypting, authenticated so it
+/// can't be relabeled without breaking the MAC. The cipher only
+/// encrypts the payload's `stream`; the id is never encrypted
+/// (encrypting it would be chicken-and-egg, per
+/// `specs/encodings/payload.md`).
 ///
 /// `sender_pk` is taken as a parameter (rather than derived from
 /// `sender_sk` inside) because the caller already has it — the
@@ -126,13 +159,15 @@ pub enum OpenError {
 /// Reusing an id with the same shared point yields the same
 /// cipher key, which leaks plaintext-difference information.
 /// The spec recommends Sui object ids, monotonic counters, or
-/// fresh randomness.
+/// fresh randomness. Note `envelope_id` is distinct from
+/// `payload.encoding_id`: the former binds the per-message keys,
+/// the latter names how to decode the recovered stream.
 pub fn seal(
     sender_sk: &SecretKey,
     sender_pk: &PublicKey,
     recipient_pk: &PublicKey,
     envelope_id: Fq,
-    plaintext: &[Fq],
+    payload: &Payload,
 ) -> Envelope {
     let shared = shared_secret(sender_sk, recipient_pk);
 
@@ -141,13 +176,14 @@ pub fn seal(
     let key_mac = kdf_derive(&shared, &[domain_tag(MAC_ROLE), envelope_id])
         .expect("envelope kdf context has length 2, well within MAX_CONTEXT_LEN");
 
-    let ciphertext = encrypt(key_enc, plaintext);
-    let mac_tag = mac_compute(key_mac, &ciphertext);
+    let ciphertext = encrypt(key_enc, &payload.stream);
+    let mac_tag = mac_compute(key_mac, &mac_input(payload.encoding_id, &ciphertext));
 
     Envelope {
         sender_pk: *sender_pk.point(),
         recipient_pk: *recipient_pk.point(),
         envelope_id,
+        encoding_id: payload.encoding_id,
         ciphertext,
         mac_tag,
     }
@@ -163,17 +199,22 @@ pub fn seal(
 /// 3. Derive `key_mac`.
 /// 4. MAC verify; on failure, [`OpenError::MacFailure`] (the
 ///    decryption step is NOT run).
-/// 5. Derive `key_enc`, decrypt, return the plaintext.
+/// 5. Derive `key_enc`, decrypt, return the recovered payload.
 ///
 /// **MAC before decrypt.** The discipline pinned in
 /// `babyjub-mac.md`. A recipient that decrypts first has
 /// voluntarily exposed itself to chosen-ciphertext attacks;
 /// `open` enforces the safe order.
+///
+/// Returns a [`Payload`] — the recovered stream paired with the
+/// envelope's (now MAC-authenticated) `encoding_id` — so the
+/// caller can dispatch to the right decoder via
+/// `payload.decode::<E>()`.
 pub fn open(
     recipient_sk: &SecretKey,
     recipient_pk: &PublicKey,
     envelope: &Envelope,
-) -> Result<Vec<Fq>, OpenError> {
+) -> Result<Payload, OpenError> {
     // 1. Routing check.
     if envelope.recipient_pk != *recipient_pk.point() {
         return Err(OpenError::WrongRecipient);
@@ -189,18 +230,28 @@ pub fn open(
     let sender_pk_wrapped = PublicKey::from_validated_point(envelope.sender_pk);
     let shared = shared_secret(recipient_sk, &sender_pk_wrapped);
 
-    // 3 + 4. Derive the MAC key and verify the tag before
-    //        touching the ciphertext.
+    // 3 + 4. Derive the MAC key and verify the tag — over
+    //        `[encoding_id, ...ciphertext]` — before touching the
+    //        ciphertext. Folding encoding_id into the MAC input is
+    //        what authenticates the (public) id: tampering with it
+    //        changes the MAC input and the verify fails here.
     let key_mac = kdf_derive(&shared, &[domain_tag(MAC_ROLE), envelope.envelope_id])
         .expect("envelope kdf context has length 2, well within MAX_CONTEXT_LEN");
-    if !mac_verify(key_mac, &envelope.ciphertext, envelope.mac_tag) {
+    if !mac_verify(
+        key_mac,
+        &mac_input(envelope.encoding_id, &envelope.ciphertext),
+        envelope.mac_tag,
+    ) {
         return Err(OpenError::MacFailure);
     }
 
-    // 5. MAC passed — derive the cipher key and decrypt.
+    // 5. MAC passed — derive the cipher key and decrypt. The
+    //    recovered stream is paired with the authenticated
+    //    encoding_id into a Payload.
     let key_enc = kdf_derive(&shared, &[domain_tag(CIPHER_ROLE), envelope.envelope_id])
         .expect("envelope kdf context has length 2, well within MAX_CONTEXT_LEN");
-    Ok(decrypt(key_enc, &envelope.ciphertext))
+    let stream = decrypt(key_enc, &envelope.ciphertext);
+    Ok(Payload::new(envelope.encoding_id, stream))
 }
 
 #[cfg(test)]
@@ -219,32 +270,53 @@ mod tests {
         )
     }
 
-    /// Round-trip: Alice seals a plaintext to Bob; Bob opens
-    /// and recovers it. The defining property.
+    /// Build a test payload under a stand-in encoding id. The
+    /// envelope doesn't care which encoding — only that the id
+    /// rides as authenticated metadata — so a fixed dummy id
+    /// keeps the tests focused on envelope behavior.
+    const TEST_ENCODING_ID: u64 = 777;
+
+    fn payload(stream: &[u64]) -> Payload {
+        Payload::new(
+            Fq::from(TEST_ENCODING_ID),
+            stream.iter().map(|&x| Fq::from(x)).collect(),
+        )
+    }
+
+    /// Round-trip: Alice seals a payload to Bob; Bob opens and
+    /// recovers the same payload (stream AND encoding id). The
+    /// defining property.
     #[test]
     fn seal_then_open_roundtrips() {
         let ((sk_a, pk_a), (sk_b, pk_b)) = alice_bob();
-        let plaintext = vec![
-            Fq::from(1u64),
-            Fq::from(2u64),
-            Fq::from(3u64),
-            Fq::from(4u64),
-        ];
+        let p = payload(&[1, 2, 3, 4]);
 
-        let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &plaintext);
+        let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &p);
         let recovered = open(&sk_b, &pk_b, &envelope).expect("ok");
-        assert_eq!(recovered, plaintext);
+        assert_eq!(recovered, p);
+        assert_eq!(recovered.encoding_id, Fq::from(TEST_ENCODING_ID));
     }
 
-    /// An empty plaintext seals and opens correctly. Edge case
-    /// inherited from the cipher.
+    /// An empty-stream payload seals and opens correctly. Edge
+    /// case inherited from the cipher; the encoding id still
+    /// round-trips.
     #[test]
-    fn seal_then_open_empty_plaintext() {
+    fn seal_then_open_empty_stream() {
         let ((sk_a, pk_a), (sk_b, pk_b)) = alice_bob();
-        let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &[]);
+        let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[]));
         assert!(envelope.ciphertext.is_empty());
         let recovered = open(&sk_b, &pk_b, &envelope).expect("ok");
-        assert!(recovered.is_empty());
+        assert!(recovered.stream.is_empty());
+        assert_eq!(recovered.encoding_id, Fq::from(TEST_ENCODING_ID));
+    }
+
+    /// The envelope carries the payload's encoding id as a public
+    /// field.
+    #[test]
+    fn envelope_carries_encoding_id() {
+        let ((sk_a, pk_a), (_sk_b, pk_b)) = alice_bob();
+        let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[1]));
+        assert_eq!(envelope.encoding_id, Fq::from(TEST_ENCODING_ID));
     }
 
     /// An envelope addressed to Eve (not Bob) is rejected
@@ -258,7 +330,7 @@ mod tests {
         let (sk_e, pk_e) = keypair_from_seed(&Seed::from_bytes(seed_e));
 
         // Alice seals for Bob.
-        let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &[Fq::from(1u64)]);
+        let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[1]));
         // Eve tries to open it.
         let err = open(&sk_e, &pk_e, &envelope).unwrap_err();
         assert_eq!(err, OpenError::WrongRecipient);
@@ -269,13 +341,7 @@ mod tests {
     #[test]
     fn open_rejects_tampered_ciphertext() {
         let ((sk_a, pk_a), (sk_b, pk_b)) = alice_bob();
-        let mut envelope = seal(
-            &sk_a,
-            &pk_a,
-            &pk_b,
-            Fq::from(42u64),
-            &[Fq::from(1u64), Fq::from(2u64), Fq::from(3u64)],
-        );
+        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[1, 2, 3]));
 
         envelope.ciphertext[1] += Fq::from(1u64);
         let err = open(&sk_b, &pk_b, &envelope).unwrap_err();
@@ -288,7 +354,7 @@ mod tests {
     #[test]
     fn open_rejects_tampered_mac_tag() {
         let ((sk_a, pk_a), (sk_b, pk_b)) = alice_bob();
-        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &[Fq::from(1u64)]);
+        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[1]));
 
         envelope.mac_tag += Fq::from(1u64);
         let err = open(&sk_b, &pk_b, &envelope).unwrap_err();
@@ -303,9 +369,26 @@ mod tests {
     #[test]
     fn open_rejects_tampered_envelope_id() {
         let ((sk_a, pk_a), (sk_b, pk_b)) = alice_bob();
-        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &[Fq::from(1u64)]);
+        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[1]));
 
         envelope.envelope_id = Fq::from(43u64);
+        let err = open(&sk_b, &pk_b, &envelope).unwrap_err();
+        assert_eq!(err, OpenError::MacFailure);
+    }
+
+    /// A tampered `encoding_id` fails the verify. This is the
+    /// new Option-A binding: the id is folded into the MAC
+    /// input, so relabeling it changes the MAC input and the
+    /// verify fails. Without the binding the relabel would be
+    /// silent.
+    #[test]
+    fn open_rejects_tampered_encoding_id() {
+        let ((sk_a, pk_a), (sk_b, pk_b)) = alice_bob();
+        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[1, 2, 3]));
+
+        // Relabel the encoding id; ciphertext and mac_tag
+        // untouched.
+        envelope.encoding_id = Fq::from(TEST_ENCODING_ID + 1);
         let err = open(&sk_b, &pk_b, &envelope).unwrap_err();
         assert_eq!(err, OpenError::MacFailure);
     }
@@ -321,7 +404,7 @@ mod tests {
         seed_e[0] = 3;
         let (_sk_e, pk_e) = keypair_from_seed(&Seed::from_bytes(seed_e));
 
-        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &[Fq::from(1u64)]);
+        let mut envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload(&[1]));
 
         // Replace sender_pk with Eve's. Bob still sees the
         // envelope addressed to himself (recipient_pk
@@ -334,14 +417,14 @@ mod tests {
     }
 
     /// Different envelope ids yield different ciphertexts even
-    /// for the same plaintext, sender, recipient. Pins
+    /// for the same payload, sender, recipient. Pins
     /// per-envelope keying.
     #[test]
     fn different_envelope_ids_yield_different_ciphertexts() {
         let ((sk_a, pk_a), (_sk_b, pk_b)) = alice_bob();
-        let plaintext = vec![Fq::from(1u64), Fq::from(2u64)];
-        let env1 = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &plaintext);
-        let env2 = seal(&sk_a, &pk_a, &pk_b, Fq::from(43u64), &plaintext);
+        let p = payload(&[1, 2]);
+        let env1 = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &p);
+        let env2 = seal(&sk_a, &pk_a, &pk_b, Fq::from(43u64), &p);
         assert_ne!(env1.ciphertext, env2.ciphertext);
         assert_ne!(env1.mac_tag, env2.mac_tag);
     }

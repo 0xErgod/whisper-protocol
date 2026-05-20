@@ -41,10 +41,19 @@ envelope = {
     sender_pk         : EdwardsAffine,   // public, on-curve, prime-subgroup
     recipient_pk      : EdwardsAffine,   // public, on-curve, prime-subgroup
     envelope_id       : Fq,              // per-envelope binding scalar
+    encoding_id       : Fq,              // payload encoding id; public, MAC-bound
     ciphertext        : Vec<Fq>,         // length-preserving cipher output
-    mac_tag           : Fq,              // one-field-element integrity tag
+    mac_tag           : Fq,              // integrity tag over [encoding_id, ...ciphertext]
 }
 ```
+
+The envelope seals a [payload](./encodings/payload.md) — a
+`(encoding_id, stream)` pair. The cipher encrypts only the
+`stream`; the `encoding_id` rides as **public metadata** (a
+recipient needs it before decrypting, to pick a decoder) but is
+**authenticated** by folding it into the MAC input, so it cannot
+be relabeled without breaking the MAC. See
+[§ Encoding-id binding](#encoding-id-binding).
 
 Plaintext, blinding scalars, and the sender's secret key are
 **never** part of the envelope. Decryption requires the
@@ -95,18 +104,24 @@ can check natively, and what requires a circuit.
 ### Sealing (sender side)
 
 Given sender's keypair `(sk_a, pk_a)`, recipient's public key
-`pk_b`, an envelope id `envelope_id ∈ Fq`, and a plaintext
-stream `plaintext: Vec<Fq>`:
+`pk_b`, an envelope id `envelope_id ∈ Fq`, and a payload
+`{ encoding_id, stream }`:
 
 ```text
 1. shared       = babyjub-ecdh(sk_a, pk_b)
 2. key_enc      = babyjub-kdf(shared, [ENC_ROLE_TAG, envelope_id])
 3. key_mac      = babyjub-kdf(shared, [MAC_ROLE_TAG, envelope_id])
-4. ciphertext   = babyjub-cipher.encrypt(key_enc, plaintext)
-5. mac_tag      = babyjub-mac.mac(key_mac, ciphertext)
+4. ciphertext   = babyjub-cipher.encrypt(key_enc, payload.stream)
+5. mac_tag      = babyjub-mac.mac(key_mac, [payload.encoding_id, ...ciphertext])
 6. envelope     = { sender_pk: pk_a, recipient_pk: pk_b, envelope_id,
-                    ciphertext, mac_tag }
+                    encoding_id: payload.encoding_id, ciphertext, mac_tag }
 ```
+
+Note `envelope_id` (binds the per-message keys) and
+`encoding_id` (names how to decode the recovered stream) are
+distinct. The cipher encrypts only `payload.stream`; the
+encoding id is never encrypted (that would be chicken-and-egg —
+the recipient needs it to pick a decoder).
 
 The role tags are pinned in
 [`babyjub-kdf.md`](./babyjub-kdf.md):
@@ -122,18 +137,25 @@ MAC_ROLE_TAG = domain_tag("envelope-mac-key")
 ### Opening (recipient side)
 
 Given recipient's keypair `(sk_b, pk_b)` and an envelope
-`{sender_pk, recipient_pk, envelope_id, ciphertext, mac_tag}`:
+`{sender_pk, recipient_pk, envelope_id, encoding_id, ciphertext,
+mac_tag}`:
 
 ```text
 1. Verify recipient_pk == pk_b. If not, reject (envelope is
    for a different recipient).
 2. shared       = babyjub-ecdh(sk_b, sender_pk)
 3. key_mac      = babyjub-kdf(shared, [MAC_ROLE_TAG, envelope_id])
-4. Verify babyjub-mac.verify(key_mac, ciphertext, mac_tag). If
-   not, reject (envelope is corrupt or forged).
+4. Verify babyjub-mac.verify(key_mac, [encoding_id, ...ciphertext],
+   mac_tag). If not, reject (envelope is corrupt or forged, or
+   its encoding_id was relabeled).
 5. key_enc      = babyjub-kdf(shared, [ENC_ROLE_TAG, envelope_id])
-6. plaintext    = babyjub-cipher.decrypt(key_enc, ciphertext)
+6. stream       = babyjub-cipher.decrypt(key_enc, ciphertext)
+7. payload      = { encoding_id, stream }
 ```
+
+`open` returns the recovered **payload** — the stream paired
+with the (now MAC-authenticated) encoding id — so the caller
+dispatches to the right decoder via `payload.decode::<E>()`.
 
 **The MAC check happens BEFORE decryption.** This is the
 encrypt-then-MAC discipline:
@@ -156,10 +178,36 @@ The order matters and is non-negotiable:
   Recommended id sources: a Sui object id (already globally
   unique), a monotonic counter persisted by the sender, or
   fresh randomness from the sender's RNG.
-- **The MAC covers the ciphertext, NOT the plaintext.** Pairing
-  the MAC over the *ciphertext* (not the *plaintext*) is what
-  makes encrypt-then-MAC sound; reversing it (MAC-then-encrypt)
-  has known foot-guns and is forbidden.
+- **The MAC covers `[encoding_id, ...ciphertext]`, NOT the
+  plaintext.** Pairing the MAC over the *ciphertext* (not the
+  *plaintext*) is what makes encrypt-then-MAC sound; reversing
+  it (MAC-then-encrypt) has known foot-guns and is forbidden.
+  Prepending `encoding_id` to the MAC input is what authenticates
+  the (public) encoding id — see below.
+
+### Encoding-id binding
+
+The envelope seals a [payload](./encodings/payload.md), whose
+`encoding_id` tells a recipient how to interpret the recovered
+stream. That id is **public** (the recipient needs it before
+decrypting) but must be **authenticated** (otherwise an attacker
+could relabel a `text-utf8-v1` envelope as `kv-pairs-v1` and the
+recipient would decode the same bytes under the wrong encoding —
+cross-encoding confusion).
+
+The envelope authenticates the id by **folding it into the MAC
+input**: `mac_tag = mac(key_mac, [encoding_id, ...ciphertext])`.
+The id occupies position 0 of the MAC's input stream. Relabeling
+the id changes the MAC input, so `open`'s MAC verify fails and
+the envelope is rejected.
+
+This is the envelope-native analogue of the commitment's
+id-binding (`protocol-commitment.md` commits the id as the
+position-0 element): each composition binds the id through its
+own integrity mechanism — the MAC here, the commitment's binding
+property there. The id is NOT folded into the KDF context (the
+keys stay about envelope *identity*, not payload *encoding*);
+it's bound at the integrity-check layer where it belongs.
 
 ## Properties
 
@@ -236,6 +284,7 @@ pub struct Envelope {
     pub sender_pk:    EdwardsAffine,
     pub recipient_pk: EdwardsAffine,
     pub envelope_id:  Fq,
+    pub encoding_id:  Fq,
     pub ciphertext:   Vec<Fq>,
     pub mac_tag:      Fq,
 }
@@ -245,15 +294,20 @@ pub fn seal(
     sender_pk:    &PublicKey,
     recipient_pk: &PublicKey,
     envelope_id:  Fq,
-    plaintext:    &[Fq],
+    payload:      &Payload,    // { encoding_id, stream }
 ) -> Envelope;
 
 pub fn open(
     recipient_sk: &SecretKey,
     recipient_pk: &PublicKey,
     envelope:     &Envelope,
-) -> Result<Vec<Fq>, OpenError>;
+) -> Result<Payload, OpenError>;   // recovered { encoding_id, stream }
 ```
+
+`seal` takes a `Payload` and `open` returns one — the encoding
+id travels with the content in both directions, so a caller
+that opens an envelope can immediately `payload.decode::<E>()`
+without tracking the encoding out-of-band.
 
 `OpenError` distinguishes:
 
@@ -287,9 +341,13 @@ A conformant implementation MUST:
   `domain_tag("envelope-mac-key")`. No other role tag is
   permitted for envelope construction; mixing role tags
   with other consumers would break domain separation.
-- **Treat `envelope_id` as a non-private value.** The id is
-  part of the public envelope; do not derive it from secret
-  material.
+- **Treat `envelope_id` and `encoding_id` as non-private
+  values.** Both are part of the public envelope; do not derive
+  them from secret material.
+- **Fold `encoding_id` into the MAC input** as
+  `mac(key_mac, [encoding_id, ...ciphertext])`. An implementation
+  that MACs the bare ciphertext leaves the encoding id
+  unauthenticated and is vulnerable to cross-encoding confusion.
 - **Match every pinned vector byte-for-byte.**
 
 ## Worked Example
@@ -304,8 +362,15 @@ exactly.
 Alice seed   = 0x01 followed by 63 × 0x00
 Bob seed     = 0x02 followed by 63 × 0x00
 envelope_id  = 42
-plaintext    = [1, 2, 3, 4]
+payload      = {
+    encoding_id = 10251905648233427808659162032937842155138269080868533503078341140126603942221,  // text-utf8-v1
+    stream      = [1, 2, 3, 4],
+}
 ```
+
+The `encoding_id` is the `text-utf8-v1` registry id (see
+[`encodings/payload.md`](./encodings/payload.md)). The `[1, 2,
+3, 4]` stream is a stand-in for a 4-element encoded payload.
 
 Derived (already pinned in
 [`babyjub-keypair.md`](./babyjub-keypair.md) and
@@ -328,10 +393,18 @@ key_mac      = babyjub-kdf(shared, [MAC_ROLE_TAG, 42])
 derived from their seeds (see
 [`babyjub-keypair.md`](./babyjub-keypair.md)).
 
+`encoding_id` is the text-utf8-v1 id:
+
+```text
+encoding_id = 10251905648233427808659162032937842155138269080868533503078341140126603942221
+```
+
 `ciphertext` matches
 [`babyjub-cipher.md`](./babyjub-cipher.md) Vector 3 exactly —
-the cipher-role-key encryption of `[1, 2, 3, 4]` for envelope
-id 42:
+the cipher-role-key encryption of the payload's `stream`
+`[1, 2, 3, 4]` for envelope id 42. (The encoding-id binding does
+not touch the cipher, only the MAC, so this vector is unchanged
+from the pre-payload envelope.)
 
 ```text
 ciphertext = [
@@ -342,12 +415,13 @@ ciphertext = [
 ]
 ```
 
-`mac_tag` matches [`babyjub-mac.md`](./babyjub-mac.md) Vector 5
-exactly — the mac-role-key tag over the canonical ciphertext
-above:
+`mac_tag` is the mac-role-key tag over the **augmented** MAC
+input `[encoding_id, ...ciphertext]` (NOT the bare ciphertext,
+so it differs from `babyjub-mac.md` Vector 5 — the difference is
+the encoding-id binding):
 
 ```text
-mac_tag = 16162720997808794646235033165738484245710842752524771795771394985271256269398
+mac_tag = 10617735897557692178614481311515068866203189059565568446474293383244412682151
 ```
 
 ### Round trip
@@ -359,13 +433,17 @@ Bob runs `open(sk_b, &pk_b, &envelope)`:
    shared.y)` above.
 3. `key_mac = kdf(shared, [MAC_ROLE_TAG, 42])` → matches the
    pinned `key_mac` above.
-4. `mac.verify(key_mac, ciphertext, mac_tag)` → `true`. ✓
+4. `mac.verify(key_mac, [encoding_id, ...ciphertext], mac_tag)`
+   → `true`. ✓
 5. `key_enc = kdf(shared, [ENC_ROLE_TAG, 42])` → matches the
    pinned `key_enc` above.
-6. `plaintext = cipher.decrypt(key_enc, ciphertext)` →
+6. `stream = cipher.decrypt(key_enc, ciphertext)` →
    `[1, 2, 3, 4]`. ✓
+7. `payload = { encoding_id, stream }` — Bob can now
+   `payload.decode::<TextUtf8V1>()` because `encoding_id` names
+   that encoding.
 
-The recovered plaintext equals the original by the cipher's
+The recovered stream equals the original by the cipher's
 round-trip contract (`babyjub-cipher.md § Vector 3`).
 
 ### Negative cases the spec pins
@@ -373,6 +451,11 @@ round-trip contract (`babyjub-cipher.md § Vector 3`).
 - **Tampered ciphertext.** Flipping any single field of
   `ciphertext` produces a different MAC tag; the recipient
   rejects with `MacFailure`. No partial-plaintext leak.
+- **Tampered encoding_id.** Relabeling `encoding_id` (ciphertext
+  and `mac_tag` untouched) changes the MAC input
+  `[encoding_id, ...ciphertext]`; the MAC verify fails, `open`
+  returns `MacFailure`. This is the encoding-id binding
+  defending against cross-encoding confusion.
 - **Wrong recipient.** Substituting Eve's `pk_e` for
   `recipient_pk` in the envelope and passing it to Bob's
   `open`: Bob rejects with `WrongRecipient` before any

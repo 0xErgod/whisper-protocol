@@ -50,9 +50,11 @@
 mod error;
 mod field_stream;
 pub mod id;
+mod payload;
 
 pub use error::EncodingError;
 pub use field_stream::FieldStream;
+pub use payload::Payload;
 
 use crate::babyjub::Fq;
 

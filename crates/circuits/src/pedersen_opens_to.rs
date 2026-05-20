@@ -35,15 +35,16 @@
 //!   one element" is a building block any envelope-style flow
 //!   ends up using.
 //!
-//! ## Public inputs (3 of 8)
+//! ## Public inputs (4 of 8)
 //!
 //! | Position | Meaning |
 //! |----------|---------|
 //! | `commitment_x` | x-coordinate of the Pedersen commitment |
 //! | `commitment_y` | y-coordinate of the Pedersen commitment |
-//! | `claimed_first_value` | the value the prover claims `x_0` equals |
+//! | `encoding_id` | the payload's encoding id (also committed at augmented position 0) |
+//! | `claimed_first_value` | the value the prover claims the payload's `stream[0]` equals |
 //!
-//! Room for 5 more public inputs in future variants (range
+//! Room for 4 more public inputs in future variants (range
 //! constraints, position selection, etc.) without hitting Sui's
 //! 8-element cap.
 //!
@@ -62,21 +63,36 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisE
 use crypto::babyjub::{EdwardsAffine, Fq};
 use gadgets::babyjub::{alloc_point_witness, commit_var};
 
-/// Pinned stream length for this circuit. Same as the
-/// `text-utf8-v1` encoding's output size.
+/// Pinned **payload** stream length for this circuit. Same as the
+/// `text-utf8-v1` encoding's output size. The committed stream is
+/// one longer (`AUGMENTED_LEN`) because the encoding id is
+/// prepended — see [`AUGMENTED_LEN`].
 pub const STREAM_LEN: usize = 9;
+
+/// Length of the stream actually committed: the payload stream
+/// plus the encoding id prepended at position 0. Matches
+/// `protocol::commitment`'s `[encoding_id, ...stream]`
+/// construction (see `specs/protocol-commitment.md`).
+pub const AUGMENTED_LEN: usize = STREAM_LEN + 1;
 
 /// The circuit. All fields are `Option<T>` so the same struct can
 /// be instantiated for trusted setup (`empty()`) and for actual
 /// proving (with real witness values).
 ///
-/// **Public** fields are the three public inputs the verifier
-/// sees: the commitment's coordinates and the claimed first
-/// element.
+/// **Public** fields are the four public inputs the verifier
+/// sees: the commitment's coordinates, the encoding id (public
+/// metadata, also bound inside the commitment), and the claimed
+/// first element of the payload.
 ///
-/// **Private** fields are the witness: the full stream and the
+/// **Private** fields are the witness: the payload stream and the
 /// blinding scalar. Both are `Option`s so the setup path can pass
 /// `None`-style dummies via `empty()`.
+///
+/// The committed value is `[encoding_id, ...stream]` — the
+/// encoding id at position 0, the payload at positions 1..N+1 —
+/// mirroring `protocol::commitment`. So "claimed first value"
+/// refers to `stream[0]`, which is the augmented commitment's
+/// position 1.
 #[derive(Clone, Debug)]
 pub struct PedersenOpensTo {
     // --- public inputs ---
@@ -84,11 +100,15 @@ pub struct PedersenOpensTo {
     pub commitment_x: Option<Fq>,
     /// Commitment y-coordinate. Public.
     pub commitment_y: Option<Fq>,
-    /// The value the prover claims equals `stream[0]`. Public.
+    /// The payload's encoding id. Public metadata, also bound as
+    /// the position-0 element inside the commitment.
+    pub encoding_id: Option<Fq>,
+    /// The value the prover claims equals the payload's
+    /// `stream[0]`. Public.
     pub claimed_first_value: Option<Fq>,
 
     // --- witnesses ---
-    /// The committed stream. Witness.
+    /// The payload stream (length `STREAM_LEN`). Witness.
     pub stream: Option<[Fq; STREAM_LEN]>,
     /// The Pedersen blinding scalar. Witness.
     pub blinding: Option<Fr>,
@@ -101,6 +121,7 @@ impl PedersenOpensTo {
     /// `Groth16::prove`.
     pub fn new(
         commitment: EdwardsAffine,
+        encoding_id: Fq,
         claimed_first_value: Fq,
         stream: [Fq; STREAM_LEN],
         blinding: Fr,
@@ -108,10 +129,28 @@ impl PedersenOpensTo {
         Self {
             commitment_x: Some(commitment.x),
             commitment_y: Some(commitment.y),
+            encoding_id: Some(encoding_id),
             claimed_first_value: Some(claimed_first_value),
             stream: Some(stream),
             blinding: Some(blinding),
         }
+    }
+
+    /// Build the augmented committed stream `[encoding_id,
+    /// ...stream]`. The single place the id-prepend rule lives,
+    /// shared by `empty`, the constraint synthesis, tests, and
+    /// the stats/fixture example — matching
+    /// `protocol::commitment`'s construction. Public so fixture
+    /// generators outside the crate can reproduce the exact
+    /// committed value.
+    pub fn augmented_stream(
+        encoding_id: Fq,
+        stream: &[Fq; STREAM_LEN],
+    ) -> [Fq; AUGMENTED_LEN] {
+        let mut augmented = [Fq::from(0u64); AUGMENTED_LEN];
+        augmented[0] = encoding_id;
+        augmented[1..].copy_from_slice(stream);
+        augmented
     }
 
     /// Construct a circuit instance for trusted setup. Witness
@@ -129,15 +168,18 @@ impl PedersenOpensTo {
     /// to a useful proof — it just needs every gadget's
     /// constraint graph to be reachable.
     pub fn empty() -> Self {
-        // Dummy stream and blinding chosen so that the dummy
-        // public inputs (computed below) satisfy every
-        // structural constraint.
+        // Dummy stream, encoding id, and blinding chosen so that
+        // the dummy public inputs (computed below) satisfy every
+        // structural constraint. The committed value is the
+        // augmented `[encoding_id, ...stream]`.
         let stream = [Fq::from(0u64); STREAM_LEN];
+        let encoding_id = Fq::from(0u64);
         let blinding = Fr::from(1u64);
-        let commitment = crypto::babyjub::commit(&stream, blinding);
+        let augmented = Self::augmented_stream(encoding_id, &stream);
+        let commitment = crypto::babyjub::commit(&augmented, blinding);
         let claimed_first_value = stream[0];
 
-        Self::new(commitment, claimed_first_value, stream, blinding)
+        Self::new(commitment, encoding_id, claimed_first_value, stream, blinding)
     }
 }
 
@@ -157,15 +199,22 @@ impl ConstraintSynthesizer<Fq> for PedersenOpensTo {
         let commitment_y_var = FpVar::<Fq>::new_input(cs.clone(), || {
             self.commitment_y.ok_or(SynthesisError::AssignmentMissing)
         })?;
+        // encoding_id is a public input — public metadata that's
+        // also the position-0 element of the committed stream, so
+        // the verifier sees which encoding the payload claims to
+        // be (Level-A binding).
+        let encoding_id_var = FpVar::<Fq>::new_input(cs.clone(), || {
+            self.encoding_id.ok_or(SynthesisError::AssignmentMissing)
+        })?;
         let claimed_first_value_var = FpVar::<Fq>::new_input(cs.clone(), || {
             self.claimed_first_value
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
         // --- allocate witnesses ---
-        // The stream becomes N FpVar witnesses; the blinding
-        // becomes an Fr value threaded into commit_var (which
-        // allocates the bit decomposition internally).
+        // The payload stream becomes N FpVar witnesses; the
+        // blinding becomes an Fr value threaded into commit_var
+        // (which allocates the bit decomposition internally).
         let stream_vals: [Fq; STREAM_LEN] =
             self.stream.unwrap_or([Fq::from(0u64); STREAM_LEN]);
         let stream_vars: [FpVar<Fq>; STREAM_LEN] = {
@@ -178,12 +227,27 @@ impl ConstraintSynthesizer<Fq> for PedersenOpensTo {
         };
         let blinding = self.blinding.unwrap_or(Fr::from(1u64));
 
+        // --- build the augmented committed stream ---
+        // [encoding_id, ...stream] — the encoding id at position
+        // 0, payload at 1..N+1. Mirrors protocol::commitment so
+        // the in-circuit commitment matches the native one.
+        let mut augmented_vars: Vec<FpVar<Fq>> = Vec::with_capacity(AUGMENTED_LEN);
+        augmented_vars.push(encoding_id_var);
+        augmented_vars.extend(stream_vars.iter().cloned());
+        let augmented_arr: [FpVar<Fq>; AUGMENTED_LEN] = augmented_vars
+            .try_into()
+            .map_err(|_| SynthesisError::Unsatisfiable)?;
+
         // --- constraint 1: commitment matches ---
-        let computed_commitment = commit_var(cs.clone(), &stream_vars, blinding)?;
+        // commit_var over the AUGMENTED stream binds both the
+        // encoding id (position 0) and the payload (1..N+1).
+        let computed_commitment = commit_var(cs.clone(), &augmented_arr, blinding)?;
         computed_commitment.x.enforce_equal(&commitment_x_var)?;
         computed_commitment.y.enforce_equal(&commitment_y_var)?;
 
         // --- constraint 2: claimed first value matches ---
+        // stream_vars[0] is the payload's first element (the
+        // augmented commitment's position 1).
         stream_vars[0].enforce_equal(&claimed_first_value_var)?;
 
         // The `alloc_point_witness` import is unused in this
@@ -210,9 +274,9 @@ impl ConstraintSynthesizer<Fq> for PedersenOpensTo {
 /// Wire-form inputs for the `pedersen_opens_to` circuit.
 ///
 /// Field elements are base-10 decimal strings. The shape mirrors
-/// `PedersenOpensTo::new`: three public inputs (the commitment and
-/// the claimed first value) plus two witnesses (the stream and the
-/// blinding).
+/// `PedersenOpensTo::new`: four public inputs (the commitment, the
+/// encoding id, and the claimed first value) plus two witnesses
+/// (the payload stream and the blinding).
 ///
 /// This struct is consumed by:
 ///
@@ -230,9 +294,13 @@ pub struct PedersenOpensToInputs {
     pub commitment_x: String,
     /// Commitment y-coordinate, decimal string.
     pub commitment_y: String,
-    /// The value the prover claims `stream[0]` equals, decimal string.
+    /// The payload's encoding id, decimal string. Public; also
+    /// the position-0 element of the committed (augmented) stream.
+    pub encoding_id: String,
+    /// The value the prover claims the payload's `stream[0]`
+    /// equals, decimal string.
     pub claimed_first_value: String,
-    /// The committed stream, exactly `STREAM_LEN` decimal strings.
+    /// The payload stream, exactly `STREAM_LEN` decimal strings.
     pub stream: [String; STREAM_LEN],
     /// The Pedersen blinding scalar, decimal string in `Fr`.
     pub blinding: String,
@@ -297,7 +365,8 @@ impl TryFrom<PedersenOpensToInputs> for PedersenOpensTo {
         )
         .map_err(|e| InputsError::InvalidCommitment(e.to_string()))?;
 
-        // Parse the public claimed_first_value.
+        // Parse the public encoding_id and claimed_first_value.
+        let encoding_id = parse_fq(&i.encoding_id, "encoding_id")?;
         let claimed_first_value = parse_fq(&i.claimed_first_value, "claimed_first_value")?;
 
         // Parse the stream witnesses. Stable error attribution by
@@ -323,6 +392,7 @@ impl TryFrom<PedersenOpensToInputs> for PedersenOpensTo {
 
         Ok(PedersenOpensTo::new(
             commitment,
+            encoding_id,
             claimed_first_value,
             stream,
             blinding,
@@ -356,9 +426,9 @@ fn stream_field_name(idx: usize) -> &'static str {
 ///
 /// Returns the inputs in the order the circuit's
 /// `generate_constraints` allocates them: `[commitment_x,
-/// commitment_y, claimed_first_value]`. A verifier that calls
-/// `prover::verify(vk, &public_inputs, &proof)` MUST consume this
-/// exact ordering.
+/// commitment_y, encoding_id, claimed_first_value]`. A verifier
+/// that calls `prover::verify(vk, &public_inputs, &proof)` MUST
+/// consume this exact ordering.
 ///
 /// **Subset shape.** Takes a separate `PedersenOpensToPublicInputs`
 /// struct rather than the full witness-bearing `Inputs` — the
@@ -376,19 +446,22 @@ pub fn public_inputs_from(
 
     let cx = parse_fq(&p.commitment_x, "commitment_x")?;
     let cy = parse_fq(&p.commitment_y, "commitment_y")?;
+    let eid = parse_fq(&p.encoding_id, "encoding_id")?;
     let cv = parse_fq(&p.claimed_first_value, "claimed_first_value")?;
-    Ok(vec![cx, cy, cv])
+    Ok(vec![cx, cy, eid, cv])
 }
 
 /// Public-input-only subset of [`PedersenOpensToInputs`]. The
 /// shape the verifier consumes: no witness, just what the
-/// commitment and the claim look like on the wire.
+/// commitment, encoding id, and claim look like on the wire.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PedersenOpensToPublicInputs {
     /// Commitment x-coordinate, decimal string.
     pub commitment_x: String,
     /// Commitment y-coordinate, decimal string.
     pub commitment_y: String,
+    /// The payload's encoding id, decimal string.
+    pub encoding_id: String,
     /// The value the prover claims `stream[0]` equals, decimal string.
     pub claimed_first_value: String,
 }
@@ -399,10 +472,23 @@ mod tests {
     use ark_relations::r1cs::ConstraintSystem;
     use crypto::babyjub::commit as native_commit;
 
-    /// The honest path: a real stream and blinding, the
-    /// commitment computed correctly natively, the claimed value
-    /// matches `stream[0]`. The constraint system must be
-    /// satisfied.
+    /// Fixed encoding id for the tests — a stand-in for a real
+    /// registry id. The circuit doesn't care which value; it
+    /// only binds whatever id is committed at position 0.
+    const TEST_ENCODING_ID: u64 = 777;
+
+    /// Commit to `[encoding_id, ...stream]` natively — the
+    /// augmented stream the circuit commits to. Mirrors
+    /// `protocol::commitment::commit`.
+    fn commit_payload(encoding_id: Fq, stream: &[Fq; STREAM_LEN], blinding: Fr) -> EdwardsAffine {
+        let augmented = PedersenOpensTo::augmented_stream(encoding_id, stream);
+        native_commit(&augmented, blinding)
+    }
+
+    /// The honest path: a real payload stream and blinding, the
+    /// commitment computed over `[encoding_id, ...stream]`, the
+    /// claimed value matches the payload's `stream[0]`. The
+    /// constraint system must be satisfied.
     ///
     /// This is the load-bearing positive test: a Groth16 proof
     /// generated against this exact witness will verify.
@@ -410,6 +496,7 @@ mod tests {
     fn honest_witness_satisfies() {
         let cs = ConstraintSystem::<Fq>::new_ref();
 
+        let eid = Fq::from(TEST_ENCODING_ID);
         let stream: [Fq; STREAM_LEN] = [
             Fq::from(10u64),
             Fq::from(20u64),
@@ -422,9 +509,9 @@ mod tests {
             Fq::from(90u64),
         ];
         let blinding = Fr::from(12345u64);
-        let commitment = native_commit(&stream, blinding);
+        let commitment = commit_payload(eid, &stream, blinding);
 
-        let circuit = PedersenOpensTo::new(commitment, stream[0], stream, blinding);
+        let circuit = PedersenOpensTo::new(commitment, eid, stream[0], stream, blinding);
         circuit.generate_constraints(cs.clone()).unwrap();
 
         assert!(cs.is_satisfied().unwrap());
@@ -438,12 +525,13 @@ mod tests {
     fn wrong_claimed_value_unsatisfies() {
         let cs = ConstraintSystem::<Fq>::new_ref();
 
+        let eid = Fq::from(TEST_ENCODING_ID);
         let stream: [Fq; STREAM_LEN] = [Fq::from(10u64); STREAM_LEN];
         let blinding = Fr::from(7u64);
-        let commitment = native_commit(&stream, blinding);
+        let commitment = commit_payload(eid, &stream, blinding);
 
         // Real stream[0] = 10, prover claims 99.
-        let circuit = PedersenOpensTo::new(commitment, Fq::from(99u64), stream, blinding);
+        let circuit = PedersenOpensTo::new(commitment, eid, Fq::from(99u64), stream, blinding);
         circuit.generate_constraints(cs.clone()).unwrap();
 
         assert!(!cs.is_satisfied().unwrap());
@@ -456,9 +544,10 @@ mod tests {
     fn wrong_stream_unsatisfies() {
         let cs = ConstraintSystem::<Fq>::new_ref();
 
+        let eid = Fq::from(TEST_ENCODING_ID);
         let real_stream: [Fq; STREAM_LEN] = [Fq::from(10u64); STREAM_LEN];
         let blinding = Fr::from(7u64);
-        let commitment = native_commit(&real_stream, blinding);
+        let commitment = commit_payload(eid, &real_stream, blinding);
 
         // Different stream — same length and shape, different
         // values. Prover keeps `stream[0]` consistent with the
@@ -477,10 +566,35 @@ mod tests {
 
         let circuit = PedersenOpensTo::new(
             commitment,
+            eid,
             lying_stream[0],
             lying_stream,
             blinding,
         );
+        circuit.generate_constraints(cs.clone()).unwrap();
+
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    /// A prover who relabels the encoding id (while the
+    /// commitment was built with the real one) MUST fail — the
+    /// id is committed at position 0, so a different id yields a
+    /// different commitment point. The Level-A binding at the
+    /// commitment circuit.
+    #[test]
+    fn wrong_encoding_id_unsatisfies() {
+        let cs = ConstraintSystem::<Fq>::new_ref();
+
+        let real_eid = Fq::from(TEST_ENCODING_ID);
+        let stream: [Fq; STREAM_LEN] = [Fq::from(10u64); STREAM_LEN];
+        let blinding = Fr::from(7u64);
+        let commitment = commit_payload(real_eid, &stream, blinding);
+
+        // Prover claims a different encoding id than the one the
+        // commitment was built with.
+        let wrong_eid = Fq::from(TEST_ENCODING_ID + 1);
+        let circuit =
+            PedersenOpensTo::new(commitment, wrong_eid, stream[0], stream, blinding);
         circuit.generate_constraints(cs.clone()).unwrap();
 
         assert!(!cs.is_satisfied().unwrap());
@@ -492,12 +606,14 @@ mod tests {
     fn wrong_blinding_unsatisfies() {
         let cs = ConstraintSystem::<Fq>::new_ref();
 
+        let eid = Fq::from(TEST_ENCODING_ID);
         let stream: [Fq; STREAM_LEN] = [Fq::from(10u64); STREAM_LEN];
         let real_blinding = Fr::from(7u64);
-        let commitment = native_commit(&stream, real_blinding);
+        let commitment = commit_payload(eid, &stream, real_blinding);
 
         let wrong_blinding = Fr::from(8u64);
-        let circuit = PedersenOpensTo::new(commitment, stream[0], stream, wrong_blinding);
+        let circuit =
+            PedersenOpensTo::new(commitment, eid, stream[0], stream, wrong_blinding);
         circuit.generate_constraints(cs.clone()).unwrap();
 
         assert!(!cs.is_satisfied().unwrap());
@@ -527,6 +643,7 @@ mod tests {
     fn inputs_try_from_builds_satisfiable_circuit() {
         use ark_ff::PrimeField;
 
+        let eid = Fq::from(TEST_ENCODING_ID);
         let stream: [Fq; STREAM_LEN] = [
             Fq::from(10u64),
             Fq::from(20u64),
@@ -539,11 +656,12 @@ mod tests {
             Fq::from(90u64),
         ];
         let blinding = Fr::from(12345u64);
-        let commitment = native_commit(&stream, blinding);
+        let commitment = commit_payload(eid, &stream, blinding);
 
         let inputs = PedersenOpensToInputs {
             commitment_x: commitment.x.into_bigint().to_string(),
             commitment_y: commitment.y.into_bigint().to_string(),
+            encoding_id: eid.into_bigint().to_string(),
             claimed_first_value: stream[0].into_bigint().to_string(),
             stream: [
                 stream[0].into_bigint().to_string(),
@@ -556,10 +674,7 @@ mod tests {
                 stream[7].into_bigint().to_string(),
                 stream[8].into_bigint().to_string(),
             ],
-            blinding: {
-                use ark_ff::PrimeField;
-                blinding.into_bigint().to_string()
-            },
+            blinding: blinding.into_bigint().to_string(),
         };
 
         let circuit: PedersenOpensTo = inputs.try_into().expect("parse ok");
@@ -576,6 +691,7 @@ mod tests {
         let inputs = PedersenOpensToInputs {
             commitment_x: "1".to_string(),
             commitment_y: "1".to_string(), // not on Baby Jubjub
+            encoding_id: "777".to_string(),
             claimed_first_value: "10".to_string(),
             stream: std::array::from_fn(|_| "0".to_string()),
             blinding: "1".to_string(),
@@ -588,11 +704,12 @@ mod tests {
     /// `BadFieldDecimal`, naming the specific slot that failed.
     #[test]
     fn inputs_try_from_rejects_bad_stream_decimal() {
+        use ark_ff::PrimeField;
         // Need a valid commitment so we get past the wire decoder
         // and into the stream-parsing layer.
+        let eid = Fq::from(TEST_ENCODING_ID);
         let stream: [Fq; STREAM_LEN] = [Fq::from(0u64); STREAM_LEN];
-        let commitment = native_commit(&stream, Fr::from(1u64));
-        use ark_ff::PrimeField;
+        let commitment = commit_payload(eid, &stream, Fr::from(1u64));
 
         let mut stream_wire: [String; STREAM_LEN] =
             std::array::from_fn(|_| "0".to_string());
@@ -601,6 +718,7 @@ mod tests {
         let inputs = PedersenOpensToInputs {
             commitment_x: commitment.x.into_bigint().to_string(),
             commitment_y: commitment.y.into_bigint().to_string(),
+            encoding_id: eid.into_bigint().to_string(),
             claimed_first_value: "0".to_string(),
             stream: stream_wire,
             blinding: "1".to_string(),
@@ -616,25 +734,29 @@ mod tests {
 
     /// `public_inputs_from` extracts the verifier-side input
     /// vector in the exact order the circuit allocates them:
-    /// `[commitment_x, commitment_y, claimed_first_value]`.
-    /// Pins the verifier interface from the wire form.
+    /// `[commitment_x, commitment_y, encoding_id,
+    /// claimed_first_value]`. Pins the verifier interface from
+    /// the wire form.
     #[test]
     fn public_inputs_from_returns_inputs_in_circuit_order() {
         use ark_ff::PrimeField;
 
+        let eid = Fq::from(TEST_ENCODING_ID);
         let stream: [Fq; STREAM_LEN] = [Fq::from(10u64); STREAM_LEN];
-        let commitment = native_commit(&stream, Fr::from(7u64));
+        let commitment = commit_payload(eid, &stream, Fr::from(7u64));
         let public = PedersenOpensToPublicInputs {
             commitment_x: commitment.x.into_bigint().to_string(),
             commitment_y: commitment.y.into_bigint().to_string(),
+            encoding_id: eid.into_bigint().to_string(),
             claimed_first_value: "10".to_string(),
         };
 
         let public_inputs = public_inputs_from(&public).expect("ok");
-        assert_eq!(public_inputs.len(), 3);
+        assert_eq!(public_inputs.len(), 4);
         assert_eq!(public_inputs[0], commitment.x);
         assert_eq!(public_inputs[1], commitment.y);
-        assert_eq!(public_inputs[2], Fq::from(10u64));
+        assert_eq!(public_inputs[2], eid);
+        assert_eq!(public_inputs[3], Fq::from(10u64));
     }
 
     /// JSON round-trip: serialize an `Inputs`, deserialize it
@@ -646,6 +768,7 @@ mod tests {
         let inputs = PedersenOpensToInputs {
             commitment_x: "1".to_string(),
             commitment_y: "2".to_string(),
+            encoding_id: "777".to_string(),
             claimed_first_value: "3".to_string(),
             stream: std::array::from_fn(|i| (i as u64).to_string()),
             blinding: "42".to_string(),
@@ -655,7 +778,7 @@ mod tests {
         let back: PedersenOpensToInputs = serde_json::from_str(&json).expect("deser");
 
         assert_eq!(back.commitment_x, inputs.commitment_x);
-        assert_eq!(back.commitment_y, inputs.commitment_y);
+        assert_eq!(back.encoding_id, inputs.encoding_id);
         assert_eq!(back.claimed_first_value, inputs.claimed_first_value);
         assert_eq!(back.stream, inputs.stream);
         assert_eq!(back.blinding, inputs.blinding);

@@ -27,6 +27,7 @@ use circuits::envelope_open_at_0::{
     STREAM_LEN,
 };
 use crypto::babyjub::{keypair_from_seed, Fq, Seed};
+use crypto::encoding::{id::encoding_id, Payload};
 use protocol::envelope::{seal, Envelope};
 use prover_server::keys::build as build_registry;
 use prover_server::routes::{build_router, AppState, EnvelopeOpenAt0VerifyRequest, VerifyResponse};
@@ -81,12 +82,15 @@ fn honest_fixture() -> (
         Fq::from(9u64),
     ];
 
-    let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &plaintext);
+    let eid = encoding_id("specs/encodings/text-utf8-v1.md");
+    let payload = Payload::new(eid, plaintext.to_vec());
+    let envelope = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload);
 
     let signal = compute_signal_native(
         &envelope.sender_pk,
         &envelope.recipient_pk,
         envelope.envelope_id,
+        envelope.encoding_id,
         envelope.mac_tag,
         &envelope.ciphertext,
     );
@@ -103,6 +107,7 @@ fn honest_fixture() -> (
         recipient_pk_x: envelope.recipient_pk.x.into_bigint().to_string(),
         recipient_pk_y: envelope.recipient_pk.y.into_bigint().to_string(),
         envelope_id: envelope.envelope_id.into_bigint().to_string(),
+        encoding_id: envelope.encoding_id.into_bigint().to_string(),
         ciphertext: ciphertext_strs,
         mac_tag: envelope.mac_tag.into_bigint().to_string(),
     };
@@ -279,11 +284,14 @@ async fn http_envelope_proof_is_tied_to_specific_envelope() {
     let (_sk_b, pk_b) = keypair_from_seed(&Seed::from_bytes(seed_b));
     let plaintext: [Fq; STREAM_LEN] = std::array::from_fn(|i| Fq::from((i + 1) as u64));
 
-    let env43 = seal(&sk_a, &pk_a, &pk_b, Fq::from(43u64), &plaintext);
+    let eid = encoding_id("specs/encodings/text-utf8-v1.md");
+    let payload43 = Payload::new(eid, plaintext.to_vec());
+    let env43 = seal(&sk_a, &pk_a, &pk_b, Fq::from(43u64), &payload43);
     let signal43 = compute_signal_native(
         &env43.sender_pk,
         &env43.recipient_pk,
         env43.envelope_id,
+        env43.encoding_id,
         env43.mac_tag,
         &env43.ciphertext,
     );

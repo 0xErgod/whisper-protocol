@@ -67,23 +67,32 @@ runtime parameter.
 
 ## Verifier interface
 
-The verifier MUST consume exactly **3 public inputs**, in this
+The verifier MUST consume exactly **4 public inputs**, in this
 order:
 
 | Position | Name                  | Type | Meaning                                           |
 |----------|-----------------------|------|---------------------------------------------------|
 | 0        | `commitment_x`        | `Fq` | x-coordinate of the Pedersen commitment           |
 | 1        | `commitment_y`        | `Fq` | y-coordinate of the Pedersen commitment           |
-| 2        | `claimed_first_value` | `Fq` | the value the prover claims `stream[0]` equals    |
+| 2        | `encoding_id`         | `Fq` | the payload's encoding id (also committed at pos 0)|
+| 3        | `claimed_first_value` | `Fq` | the value the prover claims the payload's `stream[0]` equals |
 
 `Fq` here is BN254's base field — the same prime field
 `crypto::babyjub::Fq` aliases and the same field every native
 protocol value lives in.
 
+`encoding_id` is **public metadata** AND the position-0 element
+of the committed (augmented) stream — the Level-A binding from
+[`encodings/payload.md`](../encodings/payload.md). The circuit
+commits to `[encoding_id, ...stream]`, mirroring
+[`protocol-commitment.md`](../protocol-commitment.md). So the
+commitment binds the encoding id, and the verifier sees which
+encoding the payload claims to be.
+
 A conformant verifier accepts iff:
 
 ```text
-Groth16::verify(VK, [commitment_x, commitment_y, claimed_first_value], proof) == true
+Groth16::verify(VK, [commitment_x, commitment_y, encoding_id, claimed_first_value], proof) == true
 ```
 
 The order matters; passing the inputs in any other order
@@ -95,14 +104,20 @@ The prover constructs the circuit instance with:
 
 ```text
 PedersenOpensTo::new(
-    commitment           : EdwardsAffine,     // public
+    commitment           : EdwardsAffine,     // public; commits [encoding_id, ...stream]
+    encoding_id          : Fq,                // public
     claimed_first_value  : Fq,                // public
-    stream               : [Fq; 9],           // witness
+    stream               : [Fq; 9],           // witness (the payload, not the augmented stream)
     blinding             : Fr,                // witness (Baby Jubjub scalar field)
 )
 ```
 
-and calls `prover::prove(circuit, &pk, &mut rng)`. The proof
+The committed value is `[encoding_id, ...stream]` (length 10);
+the witness `stream` is the 9-element payload. `claimed_first_value`
+refers to `stream[0]` — the payload's first element, which is the
+augmented commitment's position 1.
+
+Calls `prover::prove(circuit, &pk, &mut rng)`. The proof
 artifact is opaque bytes; serialize via
 `prover::serialize_proof` for transport / on-chain submission.
 
@@ -114,13 +129,13 @@ and are stable across `ark-r1cs-std 0.5.x` patch releases.
 
 | Metric                  | Value  |
 |-------------------------|--------|
-| `num_constraints`       | 18,703 |
-| `num_instance_variables`| 4      |
-| `num_witness_variables` | 17,314 |
+| `num_constraints`       | 20,614 |
+| `num_instance_variables`| 5      |
+| `num_witness_variables` | 19,070 |
 
-`num_instance_variables = 4` is the 3 public inputs plus
+`num_instance_variables = 5` is the 4 public inputs plus
 arkworks' always-1 constant slot at index 0. The verifier's
-public-input vector is length 3 (the always-1 slot is internal
+public-input vector is length 4 (the always-1 slot is internal
 plumbing).
 
 If these numbers shift, the gadget substrate changed
@@ -136,32 +151,37 @@ value below exactly.
 ### Inputs
 
 ```text
-stream    = [10, 20, 30, 40, 50, 60, 70, 80, 90]
-blinding  = 12345
+encoding_id = 10251905648233427808659162032937842155138269080868533503078341140126603942221  (text-utf8-v1)
+stream      = [10, 20, 30, 40, 50, 60, 70, 80, 90]
+blinding    = 12345
 claimed_first_value = 10
 ```
 
 ### Native commitment
 
-Computed by `crypto::babyjub::commit(&stream, blinding)`:
+Computed by `crypto::babyjub::commit(&[encoding_id, ...stream], blinding)`
+— the augmented stream with the encoding id at position 0
+(equivalently, `protocol::commitment::commit(&payload, blinding)`):
 
 ```text
-commitment.x = 5897619111316274370769790191687306012343305332773391509514783004726110239420
-commitment.y = 10670721326457331835290598050860396503551558481410756683820575574209654653921
+commitment.x = 14178428728361130724833880240122318573449800233918657877722353700842024882875
+commitment.y = 19246693951740292838985087626008218915644570097536058114244575946261704440826
 ```
 
-These coordinates depend only on the native Pedersen scheme
-(`specs/babyjub-pedersen.md`'s pinned `G_i` and `H` generators).
-A drift in those generators changes this fixture; a drift in
-the circuit's gadget composition does NOT — the gadget mirrors
-the native primitive exactly.
+These coordinates depend on the native Pedersen scheme
+(`specs/babyjub-pedersen.md`'s pinned `G_i` and `H` generators)
+AND the encoding id at position 0. A commitment to the same
+stream under a different encoding id is a different point — the
+cross-encoding binding. A drift in the generators changes this
+fixture; a drift in the circuit's gadget composition does NOT.
 
 ### Public-input vector for the verifier
 
 ```text
 public_inputs = [
-    5897619111316274370769790191687306012343305332773391509514783004726110239420,
-    10670721326457331835290598050860396503551558481410756683820575574209654653921,
+    14178428728361130724833880240122318573449800233918657877722353700842024882875,
+    19246693951740292838985087626008218915644570097536058114244575946261704440826,
+    10251905648233427808659162032937842155138269080868533503078341140126603942221,
     10,
 ]
 ```

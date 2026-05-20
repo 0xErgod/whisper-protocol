@@ -34,7 +34,7 @@ opening procedure succeeds AND the resulting plaintext's
 shared        = sk_b · sender_pk
 key_enc       = kdf(shared, [ENC_ROLE_TAG, envelope_id])
 key_mac       = kdf(shared, [MAC_ROLE_TAG, envelope_id])
-mac(key_mac, ciphertext)   =  mac_tag         (verifier check)
+mac(key_mac, [encoding_id, ...ciphertext])  =  mac_tag   (verifier check)
 plaintext     = cipher.decrypt(key_enc, ciphertext)
 plaintext[0]  =  claimed_value                (revealed claim)
 ```
@@ -78,8 +78,8 @@ Six slots of headroom for future variants.
 
 The naive layout would have every envelope field as its own
 public input — `sender_pk.x`, `sender_pk.y`, `recipient_pk.x`,
-`recipient_pk.y`, `envelope_id`, `mac_tag`, plus `N`
-ciphertext elements. For `N=9` that's 15 fields, well over
+`recipient_pk.y`, `envelope_id`, `encoding_id`, `mac_tag`, plus
+`N` ciphertext elements. For `N=9` that's 16 fields, well over
 Sui's 8-input cap.
 
 The protocol's solution is the **signal-hash compression
@@ -102,6 +102,7 @@ signal = poseidon_hash_sponge(
         recipient_pk.x,
         recipient_pk.y,
         envelope_id,
+        encoding_id,
         mac_tag,
         ciphertext[0],
         ciphertext[1],
@@ -178,6 +179,7 @@ EnvelopeOpenAt0::new(
     sender_pk           : EdwardsAffine,
     recipient_pk        : EdwardsAffine,
     envelope_id         : Fq,
+    encoding_id         : Fq,
     ciphertext          : [Fq; 9],
     mac_tag             : Fq,
 )
@@ -229,7 +231,7 @@ The circuit enforces:
        poseidon_hash_sponge_var(
            signal_domain,
            [sender_pk.x, sender_pk.y, recipient_pk.x, recipient_pk.y,
-            envelope_id, mac_tag, ciphertext...]
+            envelope_id, encoding_id, mac_tag, ciphertext...]
        ),
        signal,
    )
@@ -304,7 +306,7 @@ Vector 4 chained through the envelope construction.)
 signal = poseidon_hash_sponge(
     domain_tag("envelope-open-signal"),
     [sender_pk.x, sender_pk.y, recipient_pk.x, recipient_pk.y,
-     42, mac_tag, ct[0], ct[1], ..., ct[8]],
+     42, encoding_id, mac_tag, ct[0], ct[1], ..., ct[8]],
 )
 ```
 
@@ -376,8 +378,8 @@ A conformant verifier implementation MUST:
 - **Reject proofs whose public-input count is not exactly 2.**
 - **Compute `signal` from the same envelope fields the
   circuit hashes**, in the same order: sender_pk, recipient_pk,
-  envelope_id, mac_tag, ciphertext. Drift in field order or
-  inclusion is a soundness break.
+  envelope_id, encoding_id, mac_tag, ciphertext. Drift in field
+  order or inclusion is a soundness break.
 
 ## References
 

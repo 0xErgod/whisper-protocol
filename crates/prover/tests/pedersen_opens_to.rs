@@ -19,6 +19,7 @@ use ark_std::rand::rngs::StdRng;
 
 use circuits::pedersen_opens_to::{PedersenOpensTo, STREAM_LEN};
 use crypto::babyjub::{commit as native_commit, Fq};
+use crypto::encoding::id::encoding_id;
 use prover::{prove, setup, verify};
 
 /// Build a deterministic RNG. Setup and prove get the same
@@ -37,6 +38,7 @@ fn honest_fixture() -> (
     Fr,
     crypto::babyjub::EdwardsAffine,
     Fq,
+    Fq,
 ) {
     let stream: [Fq; STREAM_LEN] = [
         Fq::from(10u64),
@@ -50,9 +52,13 @@ fn honest_fixture() -> (
         Fq::from(90u64),
     ];
     let blinding = Fr::from(12345u64);
-    let commitment = native_commit(&stream, blinding);
+    let encoding_id_val = encoding_id("specs/encodings/text-utf8-v1.md");
+    // The commitment is over the augmented [encoding_id, ...stream],
+    // matching protocol::commitment and the circuit.
+    let augmented = PedersenOpensTo::augmented_stream(encoding_id_val, &stream);
+    let commitment = native_commit(&augmented, blinding);
     let claimed_first_value = stream[0];
-    (stream, blinding, commitment, claimed_first_value)
+    (stream, blinding, commitment, claimed_first_value, encoding_id_val)
 }
 
 /// The spec's pinned commitment coordinates must match the
@@ -67,15 +73,15 @@ fn honest_fixture() -> (
 #[test]
 fn worked_example_commitment_matches_spec() {
     use ark_ff::PrimeField;
-    let (_, _, commitment, _) = honest_fixture();
+    let (_, _, commitment, _, _) = honest_fixture();
     assert_eq!(
         commitment.x.into_bigint().to_string(),
-        "5897619111316274370769790191687306012343305332773391509514783004726110239420",
+        "14178428728361130724833880240122318573449800233918657877722353700842024882875",
         "commitment.x drifted from the spec's worked example",
     );
     assert_eq!(
         commitment.y.into_bigint().to_string(),
-        "10670721326457331835290598050860396503551558481410756683820575574209654653921",
+        "19246693951740292838985087626008218915644570097536058114244575946261704440826",
         "commitment.y drifted from the spec's worked example",
     );
 }
@@ -96,9 +102,9 @@ fn pedersen_opens_to_proof_accepts_honest_witness() {
     let (pk, vk) = setup(PedersenOpensTo::empty(), &mut rng).expect("setup ok");
 
     // Build the honest witness and the matching public inputs.
-    let (stream, blinding, commitment, claimed_first_value) = honest_fixture();
-    let circuit = PedersenOpensTo::new(commitment, claimed_first_value, stream, blinding);
-    let public_inputs = [commitment.x, commitment.y, claimed_first_value];
+    let (stream, blinding, commitment, claimed_first_value, encoding_id_val) = honest_fixture();
+    let circuit = PedersenOpensTo::new(commitment, encoding_id_val, claimed_first_value, stream, blinding);
+    let public_inputs = [commitment.x, commitment.y, encoding_id_val, claimed_first_value];
 
     // Prove.
     let proof = prove(circuit, &pk, &mut rng).expect("prove ok");
@@ -120,14 +126,14 @@ fn pedersen_opens_to_proof_rejects_wrong_claimed_value() {
 
     let (pk, vk) = setup(PedersenOpensTo::empty(), &mut rng).expect("setup ok");
 
-    let (stream, blinding, commitment, claimed_first_value) = honest_fixture();
-    let circuit = PedersenOpensTo::new(commitment, claimed_first_value, stream, blinding);
+    let (stream, blinding, commitment, claimed_first_value, encoding_id_val) = honest_fixture();
+    let circuit = PedersenOpensTo::new(commitment, encoding_id_val, claimed_first_value, stream, blinding);
     let proof = prove(circuit, &pk, &mut rng).expect("prove ok");
 
     // Verifier checks against a DIFFERENT claimed value than the
     // one the prover committed to. Real first value is 10; we
     // claim 99.
-    let lying_public_inputs = [commitment.x, commitment.y, Fq::from(99u64)];
+    let lying_public_inputs = [commitment.x, commitment.y, encoding_id_val, Fq::from(99u64)];
     let accepted = verify(&vk, &lying_public_inputs, &proof).expect("verify ok");
     assert!(!accepted, "proof must NOT verify against wrong claimed value");
 }
@@ -146,9 +152,9 @@ fn pedersen_opens_to_proof_rejects_wrong_vk() {
     let (pk_a, _vk_a) = setup(PedersenOpensTo::empty(), &mut rng_a).expect("setup a");
     let (_pk_b, vk_b) = setup(PedersenOpensTo::empty(), &mut rng_b).expect("setup b");
 
-    let (stream, blinding, commitment, claimed_first_value) = honest_fixture();
-    let circuit = PedersenOpensTo::new(commitment, claimed_first_value, stream, blinding);
-    let public_inputs = [commitment.x, commitment.y, claimed_first_value];
+    let (stream, blinding, commitment, claimed_first_value, encoding_id_val) = honest_fixture();
+    let circuit = PedersenOpensTo::new(commitment, encoding_id_val, claimed_first_value, stream, blinding);
+    let public_inputs = [commitment.x, commitment.y, encoding_id_val, claimed_first_value];
 
     // Prove under setup A's PK.
     let proof = prove(circuit, &pk_a, &mut rng_a).expect("prove ok");
@@ -181,9 +187,9 @@ fn artifact_serialization_roundtrips() {
     // Use the round-tripped PK / VK end-to-end: prove with
     // pk_back, verify with vk_back. If either lost information
     // in serialization, this fails.
-    let (stream, blinding, commitment, claimed_first_value) = honest_fixture();
-    let circuit = PedersenOpensTo::new(commitment, claimed_first_value, stream, blinding);
-    let public_inputs = [commitment.x, commitment.y, claimed_first_value];
+    let (stream, blinding, commitment, claimed_first_value, encoding_id_val) = honest_fixture();
+    let circuit = PedersenOpensTo::new(commitment, encoding_id_val, claimed_first_value, stream, blinding);
+    let public_inputs = [commitment.x, commitment.y, encoding_id_val, claimed_first_value];
     let proof = prove(circuit, &pk_back, &mut rng).expect("prove ok");
 
     let proof_bytes = serialize_proof(&proof).expect("proof ser");

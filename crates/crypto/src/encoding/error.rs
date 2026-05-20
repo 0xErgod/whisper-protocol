@@ -28,6 +28,16 @@ pub enum EncodingError {
     /// invariants don't hold — for `text-utf8-v1`, the bytes are
     /// structurally well-formed but aren't valid UTF-8.
     SemanticInvalid(&'static str),
+    /// A [`Payload`](crate::encoding::Payload) was decoded under an
+    /// encoding whose id does not match the payload's `encoding_id`.
+    /// The cross-encoding-confusion defense: a payload may only be
+    /// decoded under the encoding it was tagged with.
+    WrongEncoding {
+        /// The id the payload carries.
+        payload: String,
+        /// The id of the encoding `decode` was called with.
+        decoder: String,
+    },
 }
 
 impl fmt::Display for EncodingError {
@@ -43,6 +53,10 @@ impl fmt::Display for EncodingError {
             EncodingError::SemanticInvalid(msg) => {
                 write!(f, "semantically invalid stream: {msg}")
             }
+            EncodingError::WrongEncoding { payload, decoder } => write!(
+                f,
+                "wrong encoding: payload tagged {payload}, decoded with {decoder}",
+            ),
         }
     }
 }
