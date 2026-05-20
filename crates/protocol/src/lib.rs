@@ -12,12 +12,13 @@
 //!   message from one wallet to another. Composes ECDH, KDF,
 //!   stream cipher, and MAC into a single typed bundle. Spec:
 //!   [`specs/protocol-envelope.md`](../../specs/protocol-envelope.md).
+//! - [`commitment`] — a vector Pedersen commitment to a
+//!   [`Payload`](crypto::encoding::Payload), with the payload's
+//!   encoding id bound as the position-0 committed element. Spec:
+//!   [`specs/protocol-commitment.md`](../../specs/protocol-commitment.md).
 //!
 //! Future:
 //!
-//! - `commitment` — wrappers around `crypto::babyjub::commit`
-//!   that pin opening / homomorphic / rerandomization helpers
-//!   if a real consumer wants more than the raw function.
 //! - `handshake` — multi-step session-establishment flow (if
 //!   one is needed; current envelope use cases are single-shot).
 //!
@@ -37,4 +38,5 @@
 //!   stored state. Where the keys come from (wallet derivation,
 //!   wallet signature, seed) is the caller's concern.
 
+pub mod commitment;
 pub mod envelope;

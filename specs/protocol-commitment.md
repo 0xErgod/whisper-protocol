@@ -235,13 +235,14 @@ augmented   = [encoding_id, 1, 2, 3, 4]
 
 ```text
 point = commit(augmented, blinding)    // via babyjub-pedersen
+point.x = 8508428564166497174489599186311549407051130495712383842299767402731906828819
+point.y = 3553708636932923270760553972757244610543695524520017929354621266609419728587
 ```
 
-The exact `point.x` / `point.y` decimals are pinned in the
-`protocol::commitment` fixture test
-(`crates/protocol/tests/commitment_fixture.rs`); they are a
-deterministic function of the augmented stream and the protocol's
-pinned Pedersen generators.
+A deterministic function of the augmented stream `[encoding_id,
+1, 2, 3, 4]` and the protocol's pinned Pedersen generators. The
+fixture test `crates/protocol/tests/commitment_fixture.rs`
+asserts these decimals; CI catches a drift the moment it lands.
 
 ### Negative cases the spec pins
 
