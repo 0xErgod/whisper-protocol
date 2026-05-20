@@ -4,10 +4,12 @@
 //! The spec's worked example chains through every underlying
 //! primitive's already-pinned vectors: the ECDH shared point
 //! from `babyjub-ecdh.md`, the KDF keys from `babyjub-kdf.md`
-//! (Vectors 2 and 3), the ciphertext from `babyjub-cipher.md`
-//! (Vector 3), and the MAC tag from `babyjub-mac.md`
-//! (Vector 5). The envelope is a composition spec; its fixture
-//! is a composition of already-pinned fixtures.
+//! (Vectors 2 and 3), and the ciphertext from `babyjub-cipher.md`
+//! (Vector 3). The MAC tag is NO LONGER `babyjub-mac.md` Vector 5
+//! directly, because the envelope now MACs `[encoding_id,
+//! ...ciphertext]` (the Option-A encoding-id binding), not the
+//! bare ciphertext — so the tag is pinned here against the
+//! augmented MAC input under the `text-utf8-v1` encoding id.
 //!
 //! If any of these decimals drift, every conformant
 //! implementation (Rust, future Move, future TS) is producing
@@ -17,7 +19,14 @@
 use ark_ff::PrimeField;
 
 use crypto::babyjub::{keypair_from_seed, point_to_strings, Fq, Seed};
+use crypto::encoding::{id::encoding_id, Payload};
 use protocol::envelope::{open, seal, Envelope};
+
+/// The text-utf8-v1 encoding id — the fixture's chosen encoding
+/// for the 4-element payload `[1,2,3,4]`. Pinned across
+/// payload.md and protocol-commitment.md too.
+const TEXT_UTF8_V1_ID: &str =
+    "10251905648233427808659162032937842155138269080868533503078341140126603942221";
 
 /// The spec's pinned Alice/Bob fixture. Same seeds the
 /// underlying `babyjub-*` specs use for their worked
@@ -31,14 +40,17 @@ fn alice_bob_envelope_42() -> Envelope {
     let (sk_a, pk_a) = keypair_from_seed(&Seed::from_bytes(seed_a));
     let (_, pk_b) = keypair_from_seed(&Seed::from_bytes(seed_b));
 
-    let plaintext = vec![
-        Fq::from(1u64),
-        Fq::from(2u64),
-        Fq::from(3u64),
-        Fq::from(4u64),
-    ];
+    let payload = Payload::new(
+        encoding_id("specs/encodings/text-utf8-v1.md"),
+        vec![
+            Fq::from(1u64),
+            Fq::from(2u64),
+            Fq::from(3u64),
+            Fq::from(4u64),
+        ],
+    );
 
-    seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &plaintext)
+    seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload)
 }
 
 fn dec(f: Fq) -> String {
@@ -47,8 +59,9 @@ fn dec(f: Fq) -> String {
 
 /// Spec: the envelope's `ciphertext` MUST equal
 /// [`babyjub-cipher.md § Vector 3`](../../specs/babyjub-cipher.md).
-/// Pins the encrypt-then-MAC composition's cipher half against
-/// the underlying spec's pinned decimals.
+/// The encoding-id binding does NOT touch the cipher — only the
+/// MAC input — so this vector is unchanged from the pre-Payload
+/// envelope.
 #[test]
 fn envelope_ciphertext_matches_cipher_spec_vector_3() {
     let envelope = alice_bob_envelope_42();
@@ -64,22 +77,32 @@ fn envelope_ciphertext_matches_cipher_spec_vector_3() {
     );
 }
 
-/// Spec: the envelope's `mac_tag` MUST equal
-/// [`babyjub-mac.md § Vector 5`](../../specs/babyjub-mac.md).
-/// Pins the MAC half — the integrity component — of the
-/// composition.
+/// Spec: the envelope's `mac_tag` is the MAC over `[encoding_id,
+/// ...ciphertext]` (Option-A binding). Pinned here. Distinct
+/// from `babyjub-mac.md` Vector 5 (which MACs the bare
+/// ciphertext) — the difference IS the encoding-id binding.
 #[test]
-fn envelope_mac_tag_matches_mac_spec_vector_5() {
+fn envelope_mac_tag_matches_augmented_input() {
     let envelope = alice_bob_envelope_42();
     assert_eq!(
         dec(envelope.mac_tag),
-        "16162720997808794646235033165738484245710842752524771795771394985271256269398",
+        "10617735897557692178614481311515068866203189059565568446474293383244412682151",
     );
+}
+
+/// Spec § Worked Example: the envelope carries the payload's
+/// `encoding_id` as a public field, equal to the text-utf8-v1
+/// id.
+#[test]
+fn envelope_carries_text_utf8_v1_encoding_id() {
+    let envelope = alice_bob_envelope_42();
+    assert_eq!(dec(envelope.encoding_id), TEXT_UTF8_V1_ID);
 }
 
 /// Spec § Worked Example: `envelope_id` is part of the
 /// envelope's public state. Trivial check but pins that the
-/// field carries the caller's input unchanged.
+/// field carries the caller's input unchanged. Note it is
+/// distinct from `encoding_id`.
 #[test]
 fn envelope_id_is_preserved() {
     let envelope = alice_bob_envelope_42();
@@ -88,11 +111,7 @@ fn envelope_id_is_preserved() {
 
 /// Spec § Worked Example: `sender_pk` and `recipient_pk` are
 /// the Alice/Bob keypair public halves derived from the pinned
-/// seeds. The decimals come from
-/// [`babyjub-keypair.md`](../../specs/babyjub-keypair.md)'s
-/// derivation; we re-derive natively rather than hard-coding
-/// them so the check stays valid even if the keypair spec's
-/// presentation shifts (the math is what we pin).
+/// seeds.
 #[test]
 fn envelope_identifies_alice_to_bob() {
     let envelope = alice_bob_envelope_42();
@@ -107,13 +126,9 @@ fn envelope_identifies_alice_to_bob() {
     assert_eq!(envelope.sender_pk, *pk_a.point());
     assert_eq!(envelope.recipient_pk, *pk_b.point());
 
-    // Also pin the wire-form decimals so a future Move-side
-    // verifier reading the envelope's coordinates as bytes
-    // can cross-check what the protocol crate produces.
+    // Wire-form decimals exist for a future Move-side verifier.
     let sender = point_to_strings(&envelope.sender_pk);
     let recipient = point_to_strings(&envelope.recipient_pk);
-    // Sender PK (Alice's): the same point babyjub-keypair.md
-    // pins for seed = [0x01, 0, 0, ...].
     assert!(!sender.x.is_empty());
     assert!(!sender.y.is_empty());
     assert!(!recipient.x.is_empty());
@@ -121,10 +136,12 @@ fn envelope_identifies_alice_to_bob() {
 }
 
 /// Round-trip across the full spec's worked example: Bob's
-/// `open` recovers `[1, 2, 3, 4]`. Pins that the construction
-/// rule's reverse direction works on the exact same vectors.
+/// `open` recovers the payload — the `[1,2,3,4]` stream paired
+/// with the text-utf8-v1 encoding id. Pins that the
+/// construction rule's reverse direction works on the exact
+/// same vectors.
 #[test]
-fn fixture_envelope_opens_to_pinned_plaintext() {
+fn fixture_envelope_opens_to_pinned_payload() {
     let envelope = alice_bob_envelope_42();
 
     let mut seed_b = [0u8; 64];
@@ -133,7 +150,7 @@ fn fixture_envelope_opens_to_pinned_plaintext() {
 
     let recovered = open(&sk_b, &pk_b, &envelope).expect("open ok");
     assert_eq!(
-        recovered,
+        recovered.stream,
         vec![
             Fq::from(1u64),
             Fq::from(2u64),
@@ -141,27 +158,14 @@ fn fixture_envelope_opens_to_pinned_plaintext() {
             Fq::from(4u64),
         ],
     );
+    assert_eq!(dec(recovered.encoding_id), TEXT_UTF8_V1_ID);
 }
 
 /// ECDH symmetry at the envelope layer: sealing Alice→Bob
-/// produces the same MAC tag as sealing Bob→Alice would
-/// (modulo which seed is the sender). This isn't a spec
-/// claim — the envelope's roles are asymmetric — but the
-/// underlying *shared point* is symmetric, so an envelope
-/// from A to B and from B to A under the same envelope_id
-/// will use the *same* keys.
-///
-/// What this means in practice: if Alice and Bob both
-/// independently happen to seal under envelope id 42, their
-/// envelopes' ciphertexts AND MAC tags differ only by
-/// plaintext (and by the sender_pk/recipient_pk swap). The
-/// keys themselves are identical.
-///
-/// We don't assert the keys directly (they aren't exposed by
-/// the protocol API on purpose), but we DO assert that
-/// resealing the same plaintext with roles swapped reproduces
-/// the same ciphertext and tag, which is the observable
-/// consequence.
+/// produces the same ciphertext and MAC tag as sealing Bob→Alice
+/// under the same envelope_id, same payload — because the shared
+/// point (and therefore both derived keys) match. Only the
+/// sender/recipient labels swap.
 #[test]
 fn ecdh_symmetric_envelope_roles() {
     let mut seed_a = [0u8; 64];
@@ -171,19 +175,16 @@ fn ecdh_symmetric_envelope_roles() {
     let (sk_a, pk_a) = keypair_from_seed(&Seed::from_bytes(seed_a));
     let (sk_b, pk_b) = keypair_from_seed(&Seed::from_bytes(seed_b));
 
-    let plaintext = vec![Fq::from(1u64), Fq::from(2u64)];
+    let payload = Payload::new(
+        encoding_id("specs/encodings/text-utf8-v1.md"),
+        vec![Fq::from(1u64), Fq::from(2u64)],
+    );
 
-    let a_to_b = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &plaintext);
-    let b_to_a = seal(&sk_b, &pk_b, &pk_a, Fq::from(42u64), &plaintext);
+    let a_to_b = seal(&sk_a, &pk_a, &pk_b, Fq::from(42u64), &payload);
+    let b_to_a = seal(&sk_b, &pk_b, &pk_a, Fq::from(42u64), &payload);
 
-    // Ciphertext and MAC tag are identical because the
-    // underlying shared point and envelope_id (and therefore
-    // both derived keys) match. Only the sender/recipient
-    // labels differ.
     assert_eq!(a_to_b.ciphertext, b_to_a.ciphertext);
     assert_eq!(a_to_b.mac_tag, b_to_a.mac_tag);
-
-    // The PK fields are swapped, as expected.
     assert_eq!(a_to_b.sender_pk, b_to_a.recipient_pk);
     assert_eq!(a_to_b.recipient_pk, b_to_a.sender_pk);
 }
