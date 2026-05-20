@@ -19,6 +19,7 @@ use circuits::pedersen_opens_to::{
     PedersenOpensToInputs, PedersenOpensToPublicInputs, STREAM_LEN,
 };
 use crypto::babyjub::{commit as native_commit, Fq};
+use crypto::encoding::id::encoding_id;
 use prover_server::keys::build as build_registry;
 use prover_server::routes::{build_router, AppState, VerifyRequest, VerifyResponse};
 
@@ -67,11 +68,15 @@ fn honest_inputs() -> (
         Fq::from(90u64),
     ];
     let blinding = Fr::from(12345u64);
-    let commitment = native_commit(&stream, blinding);
+    let eid = encoding_id("specs/encodings/text-utf8-v1.md");
+    let augmented =
+        circuits::pedersen_opens_to::PedersenOpensTo::augmented_stream(eid, &stream);
+    let commitment = native_commit(&augmented, blinding);
 
     let inputs = PedersenOpensToInputs {
         commitment_x: commitment.x.into_bigint().to_string(),
         commitment_y: commitment.y.into_bigint().to_string(),
+        encoding_id: eid.into_bigint().to_string(),
         claimed_first_value: stream[0].into_bigint().to_string(),
         stream: [
             stream[0].into_bigint().to_string(),
@@ -90,6 +95,7 @@ fn honest_inputs() -> (
     let public_inputs = PedersenOpensToPublicInputs {
         commitment_x: inputs.commitment_x.clone(),
         commitment_y: inputs.commitment_y.clone(),
+        encoding_id: inputs.encoding_id.clone(),
         claimed_first_value: inputs.claimed_first_value.clone(),
     };
 
@@ -163,6 +169,7 @@ async fn http_verify_rejects_tampered_public_inputs() {
     let lying_public_inputs = PedersenOpensToPublicInputs {
         commitment_x: inputs.commitment_x.clone(),
         commitment_y: inputs.commitment_y.clone(),
+        encoding_id: inputs.encoding_id.clone(),
         claimed_first_value: "99".to_string(),
     };
     let verify_body = VerifyRequest {
@@ -284,6 +291,7 @@ async fn http_bad_inputs_returns_400() {
     let bad_inputs = PedersenOpensToInputs {
         commitment_x: "1".to_string(),
         commitment_y: "1".to_string(),
+        encoding_id: "777".to_string(),
         claimed_first_value: "0".to_string(),
         stream: std::array::from_fn(|_| "0".to_string()),
         blinding: "1".to_string(),

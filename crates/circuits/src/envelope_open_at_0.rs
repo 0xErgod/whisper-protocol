@@ -10,12 +10,20 @@
 //! ```text
 //! Public inputs:  [signal, claimed_value]
 //! Witnesses:      recipient_sk, sender_pk, recipient_pk,
-//!                 envelope_id, ciphertext[9], mac_tag
+//!                 envelope_id, encoding_id, ciphertext[9], mac_tag
 //! Enforced:       (a) recipient_pk == recipient_sk · G
-//!                 (b) mac(key_mac, ciphertext) == mac_tag
+//!                 (b) mac(key_mac, [encoding_id, ...ciphertext]) == mac_tag
 //!                 (c) decrypt(key_enc, ciphertext)[0] == claimed_value
-//!                 (d) signal == sponge(envelope fields)
+//!                 (d) signal == sponge(envelope fields incl. encoding_id)
 //! ```
+//!
+//! `encoding_id` is the payload's encoding registry id. It is a
+//! witness here (part of the envelope), folded into BOTH the MAC
+//! input (matching `protocol::envelope`'s Option-A binding) and
+//! the signal hash (so the on-chain verifier binds it). This is
+//! the Level-A circuit binding from `specs/encodings/payload.md`:
+//! the proof carries which encoding the plaintext claims to be,
+//! closing cross-encoding confusion.
 //!
 //! where `key_enc` and `key_mac` are derived from the ECDH
 //! shared point and the protocol's pinned role tags.
@@ -73,6 +81,7 @@ pub struct EnvelopeOpenAt0 {
     pub sender_pk: Option<EdwardsAffine>,
     pub recipient_pk: Option<EdwardsAffine>,
     pub envelope_id: Option<Fq>,
+    pub encoding_id: Option<Fq>,
     pub ciphertext: Option<[Fq; STREAM_LEN]>,
     pub mac_tag: Option<Fq>,
 }
@@ -90,6 +99,7 @@ impl EnvelopeOpenAt0 {
         sender_pk: EdwardsAffine,
         recipient_pk: EdwardsAffine,
         envelope_id: Fq,
+        encoding_id: Fq,
         ciphertext: [Fq; STREAM_LEN],
         mac_tag: Fq,
     ) -> Self {
@@ -100,6 +110,7 @@ impl EnvelopeOpenAt0 {
             sender_pk: Some(sender_pk),
             recipient_pk: Some(recipient_pk),
             envelope_id: Some(envelope_id),
+            encoding_id: Some(encoding_id),
             ciphertext: Some(ciphertext),
             mac_tag: Some(mac_tag),
         }
@@ -129,13 +140,17 @@ impl EnvelopeOpenAt0 {
         // A dummy envelope sealed by sk_a to pk_b. Plaintext
         // length matches STREAM_LEN. The plaintext's first
         // element is 0 so claimed_value can also be 0 and the
-        // equality constraint is satisfiable.
+        // equality constraint is satisfiable. A dummy encoding
+        // id (any field element works for setup — only the
+        // constraint graph matters).
         let plaintext: [Fq; STREAM_LEN] = [Fq::from(0u64); STREAM_LEN];
+        let encoding_id = Fq::from(7u64);
         let envelope = protocol_envelope_seal(
             &sk_a,
             &pk_a,
             &pk_b,
             Fq::from(1u64),
+            encoding_id,
             &plaintext,
         );
 
@@ -144,6 +159,7 @@ impl EnvelopeOpenAt0 {
             &envelope.sender_pk,
             &envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             envelope.mac_tag,
             &envelope.ciphertext,
         );
@@ -161,6 +177,7 @@ impl EnvelopeOpenAt0 {
             envelope.sender_pk,
             envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             ct_array,
             envelope.mac_tag,
         )
@@ -185,6 +202,7 @@ impl ConstraintSynthesizer<Fq> for EnvelopeOpenAt0 {
         let sender_pk = self.sender_pk.unwrap_or_else(default_dummy_point);
         let recipient_pk = self.recipient_pk.unwrap_or_else(default_dummy_point);
         let envelope_id_val = self.envelope_id.unwrap_or(Fq::from(0u64));
+        let encoding_id_val = self.encoding_id.unwrap_or(Fq::from(0u64));
         let ciphertext_vals = self.ciphertext.unwrap_or([Fq::from(0u64); STREAM_LEN]);
         let mac_tag_val = self.mac_tag.unwrap_or(Fq::from(0u64));
 
@@ -192,6 +210,8 @@ impl ConstraintSynthesizer<Fq> for EnvelopeOpenAt0 {
         let recipient_pk_var = alloc_point_witness(cs.clone(), recipient_pk)?;
         let envelope_id_var =
             FpVar::<Fq>::new_witness(cs.clone(), || Ok(envelope_id_val))?;
+        let encoding_id_var =
+            FpVar::<Fq>::new_witness(cs.clone(), || Ok(encoding_id_val))?;
         let mac_tag_var = FpVar::<Fq>::new_witness(cs.clone(), || Ok(mac_tag_val))?;
 
         let ciphertext_vars: [FpVar<Fq>; STREAM_LEN] = {
@@ -230,12 +250,18 @@ impl ConstraintSynthesizer<Fq> for EnvelopeOpenAt0 {
             &[mac_role_tag, envelope_id_var.clone()],
         )?;
 
-        // ---- Constraint (b): MAC verifies ----
+        // ---- Constraint (b): MAC verifies over [encoding_id, ...ct] ----
         // computed_mac == mac_tag binds the witness mac_tag to
-        // the cryptographic relation. A wrong sk or wrong
+        // the cryptographic relation. The MAC input prepends
+        // encoding_id (matching protocol::envelope's Option-A
+        // binding), so a relabeled encoding_id changes the MAC
+        // input and fails this constraint. A wrong sk or wrong
         // sender_pk yields a wrong shared → wrong key_mac →
         // wrong computed_mac.
-        let computed_mac = mac_var(cs.clone(), &key_mac, &ciphertext_vars)?;
+        let mut mac_message: Vec<FpVar<Fq>> = Vec::with_capacity(1 + STREAM_LEN);
+        mac_message.push(encoding_id_var.clone());
+        mac_message.extend(ciphertext_vars.iter().cloned());
+        let computed_mac = mac_var(cs.clone(), &key_mac, &mac_message)?;
         computed_mac.enforce_equal(&mac_tag_var)?;
 
         // ---- Constraint (c): plaintext[POSITION] == claimed_value ----
@@ -252,13 +278,18 @@ impl ConstraintSynthesizer<Fq> for EnvelopeOpenAt0 {
         // verifier reconstructs `signal` from authoritative
         // envelope bytes and passes it as the public input,
         // forcing the circuit's witness envelope to match.
+        // Signal field order: sender_pk.{x,y}, recipient_pk.{x,y},
+        // envelope_id, encoding_id, mac_tag, ciphertext... — must
+        // match `compute_signal_native` exactly, and the Move-side
+        // reconstruction must use the same order.
         let signal_domain_tag = FpVar::<Fq>::constant(domain_tag(SIGNAL_DOMAIN));
-        let mut signal_inputs: Vec<FpVar<Fq>> = Vec::with_capacity(6 + STREAM_LEN);
+        let mut signal_inputs: Vec<FpVar<Fq>> = Vec::with_capacity(7 + STREAM_LEN);
         signal_inputs.push(sender_pk_var.x.clone());
         signal_inputs.push(sender_pk_var.y.clone());
         signal_inputs.push(recipient_pk_var.x.clone());
         signal_inputs.push(recipient_pk_var.y.clone());
         signal_inputs.push(envelope_id_var);
+        signal_inputs.push(encoding_id_var);
         signal_inputs.push(mac_tag_var);
         for c in ciphertext_vars.iter() {
             signal_inputs.push(c.clone());
@@ -279,15 +310,17 @@ pub fn compute_signal_native(
     sender_pk: &EdwardsAffine,
     recipient_pk: &EdwardsAffine,
     envelope_id: Fq,
+    encoding_id: Fq,
     mac_tag: Fq,
     ciphertext: &[Fq],
 ) -> Fq {
-    let mut inputs: Vec<Fq> = Vec::with_capacity(6 + ciphertext.len());
+    let mut inputs: Vec<Fq> = Vec::with_capacity(7 + ciphertext.len());
     inputs.push(sender_pk.x);
     inputs.push(sender_pk.y);
     inputs.push(recipient_pk.x);
     inputs.push(recipient_pk.y);
     inputs.push(envelope_id);
+    inputs.push(encoding_id);
     inputs.push(mac_tag);
     inputs.extend_from_slice(ciphertext);
     crypto::poseidon::poseidon_hash_sponge(domain_tag(SIGNAL_DOMAIN), &inputs)
@@ -306,6 +339,7 @@ fn protocol_envelope_seal(
     sender_pk: &crypto::babyjub::PublicKey,
     recipient_pk: &crypto::babyjub::PublicKey,
     envelope_id: Fq,
+    encoding_id: Fq,
     plaintext: &[Fq],
 ) -> EnvelopeStruct {
     use crypto::babyjub::{
@@ -319,12 +353,18 @@ fn protocol_envelope_seal(
     let key_mac = native_kdf(&shared, &[domain_tag(MAC_ROLE), envelope_id])
         .expect("kdf context length 2");
     let ciphertext = native_encrypt(key_enc, plaintext);
-    let mac_tag = native_mac(key_mac, &ciphertext);
+    // MAC over [encoding_id, ...ciphertext] — Option-A binding,
+    // matching protocol::envelope::seal exactly.
+    let mut mac_input = Vec::with_capacity(1 + ciphertext.len());
+    mac_input.push(encoding_id);
+    mac_input.extend_from_slice(&ciphertext);
+    let mac_tag = native_mac(key_mac, &mac_input);
 
     EnvelopeStruct {
         sender_pk: *sender_pk.point(),
         recipient_pk: *recipient_pk.point(),
         envelope_id,
+        encoding_id,
         ciphertext,
         mac_tag,
     }
@@ -337,6 +377,7 @@ struct EnvelopeStruct {
     sender_pk: EdwardsAffine,
     recipient_pk: EdwardsAffine,
     envelope_id: Fq,
+    encoding_id: Fq,
     ciphertext: Vec<Fq>,
     mac_tag: Fq,
 }
@@ -378,9 +419,12 @@ pub struct EnvelopeOpenAt0Inputs {
     pub recipient_pk_y: String,
     /// Envelope id (the per-envelope binding scalar).
     pub envelope_id: String,
+    /// Encoding id (the payload's encoding registry id). Public
+    /// metadata, folded into the MAC input and the signal hash.
+    pub encoding_id: String,
     /// Ciphertext stream, exactly `STREAM_LEN` decimal strings.
     pub ciphertext: [String; STREAM_LEN],
-    /// MAC tag over the ciphertext.
+    /// MAC tag over `[encoding_id, ...ciphertext]`.
     pub mac_tag: String,
 }
 
@@ -470,6 +514,7 @@ impl TryFrom<EnvelopeOpenAt0Inputs> for EnvelopeOpenAt0 {
                 })?;
 
         let envelope_id = parse_fq(&i.envelope_id, "envelope_id")?;
+        let encoding_id = parse_fq(&i.encoding_id, "encoding_id")?;
 
         let mut ct_vec: Vec<Fq> = Vec::with_capacity(STREAM_LEN);
         for (idx, s) in i.ciphertext.iter().enumerate() {
@@ -488,6 +533,7 @@ impl TryFrom<EnvelopeOpenAt0Inputs> for EnvelopeOpenAt0 {
             sender_pk,
             recipient_pk,
             envelope_id,
+            encoding_id,
             ciphertext,
             mac_tag,
         ))
@@ -543,6 +589,7 @@ mod tests {
             &pk_a,
             &pk_b,
             Fq::from(42u64),
+            Fq::from(7u64), // dummy encoding id for the fixture
             &plaintext,
         );
         (envelope, sk_b, plaintext)
@@ -560,6 +607,7 @@ mod tests {
             &envelope.sender_pk,
             &envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             envelope.mac_tag,
             &envelope.ciphertext,
         );
@@ -574,6 +622,7 @@ mod tests {
             envelope.sender_pk,
             envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             ct,
             envelope.mac_tag,
         );
@@ -591,6 +640,7 @@ mod tests {
             &envelope.sender_pk,
             &envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             envelope.mac_tag,
             &envelope.ciphertext,
         );
@@ -605,6 +655,7 @@ mod tests {
             envelope.sender_pk,
             envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             ct,
             envelope.mac_tag,
         );
@@ -625,6 +676,7 @@ mod tests {
             &envelope.sender_pk,
             &envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             envelope.mac_tag,
             &envelope.ciphertext,
         );
@@ -639,6 +691,7 @@ mod tests {
             envelope.sender_pk,
             envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             ct,
             envelope.mac_tag,
         );
@@ -659,6 +712,7 @@ mod tests {
             &envelope.sender_pk,
             &envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             envelope.mac_tag,
             &envelope.ciphertext,
         );
@@ -675,8 +729,50 @@ mod tests {
             envelope.sender_pk,
             envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             ct,
             tampered_mac_tag,
+        );
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    /// Tampering with the witness `encoding_id` (while the public
+    /// signal was computed from the real one) unsatisfies. This
+    /// is the Level-A binding: encoding_id enters BOTH the MAC
+    /// input and the signal hash, so a relabel fails the MAC
+    /// verify (the real mac_tag was over the real id) AND the
+    /// signal binding (the public signal pins the real id). The
+    /// cross-encoding-confusion defense at the circuit layer.
+    #[test]
+    fn tampered_encoding_id_in_witness_unsatisfies() {
+        let cs = ConstraintSystem::<Fq>::new_ref();
+        let (envelope, sk_b, plaintext) = alice_bob_envelope_with_plaintext();
+        let signal = compute_signal_native(
+            &envelope.sender_pk,
+            &envelope.recipient_pk,
+            envelope.envelope_id,
+            envelope.encoding_id,
+            envelope.mac_tag,
+            &envelope.ciphertext,
+        );
+        let ct: [Fq; STREAM_LEN] =
+            envelope.ciphertext.clone().try_into().unwrap();
+
+        // Relabel the encoding id in the witness; everything else
+        // (including the real mac_tag and the public signal) is
+        // from the genuine envelope.
+        let tampered_encoding_id = envelope.encoding_id + Fq::from(1u64);
+        let circuit = EnvelopeOpenAt0::new(
+            signal,
+            plaintext[POSITION],
+            *sk_b.scalar(),
+            envelope.sender_pk,
+            envelope.recipient_pk,
+            envelope.envelope_id,
+            tampered_encoding_id,
+            ct,
+            envelope.mac_tag,
         );
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
@@ -693,6 +789,7 @@ mod tests {
             &envelope.sender_pk,
             &envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             envelope.mac_tag,
             &envelope.ciphertext,
         );
@@ -707,6 +804,7 @@ mod tests {
             envelope.sender_pk,
             envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             ct,
             envelope.mac_tag,
         );
@@ -735,6 +833,7 @@ mod tests {
             envelope.sender_pk,
             envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             ct,
             envelope.mac_tag,
         );
@@ -769,6 +868,7 @@ mod tests {
             &envelope.sender_pk,
             &envelope.recipient_pk,
             envelope.envelope_id,
+            envelope.encoding_id,
             envelope.mac_tag,
             &envelope.ciphertext,
         );
@@ -782,6 +882,7 @@ mod tests {
             recipient_pk_x: envelope.recipient_pk.x.into_bigint().to_string(),
             recipient_pk_y: envelope.recipient_pk.y.into_bigint().to_string(),
             envelope_id: envelope.envelope_id.into_bigint().to_string(),
+            encoding_id: envelope.encoding_id.into_bigint().to_string(),
             ciphertext: std::array::from_fn(|i| {
                 envelope.ciphertext[i].into_bigint().to_string()
             }),
@@ -806,6 +907,7 @@ mod tests {
             recipient_pk_x: "1".to_string(),
             recipient_pk_y: "1".to_string(),
             envelope_id: "0".to_string(),
+            encoding_id: "0".to_string(),
             ciphertext: std::array::from_fn(|_| "0".to_string()),
             mac_tag: "0".to_string(),
         };
@@ -844,6 +946,7 @@ mod tests {
             recipient_pk_x: "6".to_string(),
             recipient_pk_y: "7".to_string(),
             envelope_id: "8".to_string(),
+            encoding_id: "9".to_string(),
             ciphertext: std::array::from_fn(|i| (i as u64).to_string()),
             mac_tag: "42".to_string(),
         };

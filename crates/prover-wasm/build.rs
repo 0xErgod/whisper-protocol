@@ -30,6 +30,7 @@ use circuits::envelope_open_at_0::{
     STREAM_LEN as ENV_STREAM_LEN,
 };
 use circuits::pedersen_opens_to::{PedersenOpensTo, PedersenOpensToInputs, STREAM_LEN};
+use crypto::encoding::id::encoding_id;
 use crypto::babyjub::{
     commit as native_commit, encrypt as native_encrypt, kdf_derive as native_kdf,
     keypair_from_seed, mac_compute as native_mac, shared_secret, Fq, Seed,
@@ -93,8 +94,10 @@ fn generate_pedersen_opens_to(dir: &std::path::Path) {
         Fq::from(90u64),
     ];
     let blinding = Fr::from(12345u64);
-    let commitment = native_commit(&stream, blinding);
-    let circuit = PedersenOpensTo::new(commitment, stream[0], stream, blinding);
+    let eid = encoding_id("specs/encodings/text-utf8-v1.md");
+    let augmented = PedersenOpensTo::augmented_stream(eid, &stream);
+    let commitment = native_commit(&augmented, blinding);
+    let circuit = PedersenOpensTo::new(commitment, eid, stream[0], stream, blinding);
     let proof = prove(circuit, &pk, &mut rng).expect("prove");
 
     // Persist PK, VK, proof. The wasm test reads them via
@@ -113,6 +116,7 @@ fn generate_pedersen_opens_to(dir: &std::path::Path) {
     let inputs = PedersenOpensToInputs {
         commitment_x: commitment.x.into_bigint().to_string(),
         commitment_y: commitment.y.into_bigint().to_string(),
+        encoding_id: eid.into_bigint().to_string(),
         claimed_first_value: stream[0].into_bigint().to_string(),
         stream: [
             stream[0].into_bigint().to_string(),
@@ -133,9 +137,10 @@ fn generate_pedersen_opens_to(dir: &std::path::Path) {
 
     // Public-input-only JSON for the verify side.
     let public_json = format!(
-        r#"{{"commitment_x":"{}","commitment_y":"{}","claimed_first_value":"{}"}}"#,
+        r#"{{"commitment_x":"{}","commitment_y":"{}","encoding_id":"{}","claimed_first_value":"{}"}}"#,
         commitment.x.into_bigint(),
         commitment.y.into_bigint(),
+        eid.into_bigint(),
         stream[0].into_bigint(),
     );
     fs::write(dir.join("pedersen_opens_to.public.json"), public_json)
@@ -177,6 +182,7 @@ fn generate_envelope_open_at_0(dir: &std::path::Path) {
     // dep graph — the math is identical and pinned in
     // specs/protocol-envelope.md).
     let envelope_id = Fq::from(42u64);
+    let env_encoding_id = encoding_id("specs/encodings/text-utf8-v1.md");
     let shared = shared_secret(&sk_a, &pk_b);
     let key_enc = native_kdf(
         &shared,
@@ -193,12 +199,17 @@ fn generate_envelope_open_at_0(dir: &std::path::Path) {
         .clone()
         .try_into()
         .expect("cipher length-preserving");
-    let mac_tag = native_mac(key_mac, &ciphertext_vec);
+    // MAC over [encoding_id, ...ciphertext] (Option-A binding).
+    let mut env_mac_input = Vec::with_capacity(1 + ciphertext_vec.len());
+    env_mac_input.push(env_encoding_id);
+    env_mac_input.extend_from_slice(&ciphertext_vec);
+    let mac_tag = native_mac(key_mac, &env_mac_input);
 
     let signal = compute_signal_native(
         pk_a.point(),
         pk_b.point(),
         envelope_id,
+        env_encoding_id,
         mac_tag,
         &ciphertext_vec,
     );
@@ -213,6 +224,7 @@ fn generate_envelope_open_at_0(dir: &std::path::Path) {
         *pk_a.point(),
         *pk_b.point(),
         envelope_id,
+        env_encoding_id,
         ciphertext,
         mac_tag,
     );
@@ -236,6 +248,7 @@ fn generate_envelope_open_at_0(dir: &std::path::Path) {
         recipient_pk_x: pk_b.point().x.into_bigint().to_string(),
         recipient_pk_y: pk_b.point().y.into_bigint().to_string(),
         envelope_id: envelope_id.into_bigint().to_string(),
+        encoding_id: env_encoding_id.into_bigint().to_string(),
         ciphertext: std::array::from_fn(|i| ciphertext[i].into_bigint().to_string()),
         mac_tag: mac_tag.into_bigint().to_string(),
     };
