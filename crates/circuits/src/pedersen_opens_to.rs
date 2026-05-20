@@ -35,15 +35,16 @@
 //!   one element" is a building block any envelope-style flow
 //!   ends up using.
 //!
-//! ## Public inputs (3 of 8)
+//! ## Public inputs (4 of 8)
 //!
 //! | Position | Meaning |
 //! |----------|---------|
 //! | `commitment_x` | x-coordinate of the Pedersen commitment |
 //! | `commitment_y` | y-coordinate of the Pedersen commitment |
-//! | `claimed_first_value` | the value the prover claims `x_0` equals |
+//! | `encoding_id` | the payload's encoding id (also committed at augmented position 0) |
+//! | `claimed_first_value` | the value the prover claims the payload's `stream[0]` equals |
 //!
-//! Room for 5 more public inputs in future variants (range
+//! Room for 4 more public inputs in future variants (range
 //! constraints, position selection, etc.) without hitting Sui's
 //! 8-element cap.
 //!
@@ -273,9 +274,9 @@ impl ConstraintSynthesizer<Fq> for PedersenOpensTo {
 /// Wire-form inputs for the `pedersen_opens_to` circuit.
 ///
 /// Field elements are base-10 decimal strings. The shape mirrors
-/// `PedersenOpensTo::new`: three public inputs (the commitment and
-/// the claimed first value) plus two witnesses (the stream and the
-/// blinding).
+/// `PedersenOpensTo::new`: four public inputs (the commitment, the
+/// encoding id, and the claimed first value) plus two witnesses
+/// (the payload stream and the blinding).
 ///
 /// This struct is consumed by:
 ///

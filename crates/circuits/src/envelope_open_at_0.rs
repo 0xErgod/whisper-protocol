@@ -267,7 +267,11 @@ impl ConstraintSynthesizer<Fq> for EnvelopeOpenAt0 {
         // ---- Constraint (c): plaintext[POSITION] == claimed_value ----
         // Run decryption to obtain the plaintext stream, then
         // enforce equality at position POSITION (compile-time
-        // 0 for this variant).
+        // 0 for this variant). Positions 1..N of the decrypted
+        // plaintext are computed but DELIBERATELY left
+        // unconstrained against any public input — that's the
+        // selective-disclosure property: the prover reveals only
+        // plaintext[0], the rest stay hidden.
         let plaintext_vars = decrypt_var(cs.clone(), &key_enc, &ciphertext_vars)?;
         plaintext_vars[POSITION].enforce_equal(&claimed_value_var)?;
 
