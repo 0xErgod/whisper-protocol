@@ -26,6 +26,9 @@ publish-output.json
 publish-testnet.json
 publish-mainnet.json
 
+# Working directory for the local deploy script (scripts/deploy-devnet.ps1)
+out/
+
 # Playwright MCP debug session captures
 .playwright-mcp/
 
