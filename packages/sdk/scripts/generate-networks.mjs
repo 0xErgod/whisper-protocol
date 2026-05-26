@@ -60,7 +60,7 @@ function renderNetwork(name, entry) {
 }
 
 function render(networks) {
-  const order = ["localnet", "testnet", "mainnet"].filter((n) => networks[n]);
+  const order = ["localnet", "devnet", "testnet", "mainnet"].filter((n) => networks[n]);
   const blocks = order.map((n) => renderNetwork(n, networks[n]));
 
   const networksMap = order.map((n) => `  ${n}: ${n.toUpperCase()},`).join("\n");

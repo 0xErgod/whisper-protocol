@@ -11,6 +11,15 @@
       "txDigest": null,
       "note": "Localnet IDs are intentionally null — every developer regenerates them via `sui start --force-regenesis` + republish. Pass explicit IDs to WhisperClient or set VITE_PACKAGE_ID / VITE_REGISTRY_ID for the demo dApp."
     },
+    "devnet": {
+      "rpcUrl": "http://sui-devnet:9000",
+      "packageId": null,
+      "registryId": null,
+      "deployedAtMs": null,
+      "deployer": null,
+      "txDigest": null,
+      "note": "Shared dev devnet at host `sui-devnet:9000`. IDs are populated per deploy by scripts/deploy-devnet.ps1 (writes networks.json then runs gen:networks). The default target of the demo dApp and SDK tests; override per-developer via VITE_SUI_RPC_URL / VITE_PACKAGE_ID / VITE_REGISTRY_ID."
+    },
     "testnet": {
       "rpcUrl": "https://fullnode.testnet.sui.io:443",
       "packageId": "0xe95fb4727effd20883b85e724f54c74b76c8f2dc7094ded7ac6ad984443b0db5",
