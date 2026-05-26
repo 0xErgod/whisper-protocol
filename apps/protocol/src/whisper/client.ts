@@ -13,7 +13,7 @@ const env = import.meta.env;
 const DEFAULT_NETWORK: NetworkName = "devnet";
 
 function resolveActiveNetwork(): NetworkName {
-  const raw = env.VITE_SUI_NETWORK as string | undefined;
+  const raw = env.VITE_SUI_NETWORK;
   if (!raw) return DEFAULT_NETWORK;
   const alias = raw.toLowerCase();
   if (alias in NETWORKS) return alias as NetworkName;
@@ -27,8 +27,7 @@ export const ACTIVE_CHAIN = `sui:${ACTIVE_NETWORK}` as const;
 
 const activeConfig = NETWORKS[ACTIVE_NETWORK];
 
-export const RPC_URL =
-  (env.VITE_SUI_RPC_URL as string | undefined) ?? activeConfig.rpcUrl;
+export const RPC_URL = env.VITE_SUI_RPC_URL ?? activeConfig.rpcUrl;
 
 function requireId(envValue: string | undefined, configValue: string | null, kind: string): string {
   if (envValue) return envValue;
@@ -38,17 +37,8 @@ function requireId(envValue: string | undefined, configValue: string | null, kin
   );
 }
 
-export const PACKAGE_ID = requireId(
-  env.VITE_PACKAGE_ID as string | undefined,
-  activeConfig.packageId,
-  "package",
-);
-
-export const REGISTRY_ID = requireId(
-  env.VITE_REGISTRY_ID as string | undefined,
-  activeConfig.registryId,
-  "registry",
-);
+export const PACKAGE_ID = requireId(env.VITE_PACKAGE_ID, activeConfig.packageId, "package");
+export const REGISTRY_ID = requireId(env.VITE_REGISTRY_ID, activeConfig.registryId, "registry");
 
 export const suiClient = new SuiClient({
   transport: new SuiHTTPTransport({ url: RPC_URL }),

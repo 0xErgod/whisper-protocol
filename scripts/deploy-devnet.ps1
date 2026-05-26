@@ -39,13 +39,18 @@ Require-Cmd python
 Require-Cmd pnpm
 
 Write-Host "==> ensuring sui client env '$EnvAlias' points at $Rpc"
-$envList = sui client envs --json 2>$null | ConvertFrom-Json
-$existing = $envList | Where-Object { $_.alias -eq $EnvAlias }
+# `sui client envs --json` returns a two-element array: the envs list,
+# then the active alias. We only care about the list.
+$envsJson = sui client envs --json 2>$null | ConvertFrom-Json
+$envs = $envsJson[0]
+$existing = $envs | Where-Object { $_.alias -eq $EnvAlias }
 if (-not $existing) {
     sui client --yes new-env --alias $EnvAlias --rpc $Rpc | Out-Null
 } elseif ($existing.rpc -ne $Rpc) {
-    Write-Host "    existing env '$EnvAlias' has rpc '$($existing.rpc)'; updating"
-    sui client --yes new-env --alias $EnvAlias --rpc $Rpc | Out-Null
+    # `sui client new-env` refuses to overwrite an existing alias, so the
+    # safe move is to surface the conflict to the caller rather than silently
+    # diverge from the requested URL.
+    throw "sui client env '$EnvAlias' is registered with rpc '$($existing.rpc)', expected '$Rpc'. Remove or rename it (sui client --yes new-env -a ...) before rerunning."
 }
 sui client switch --env $EnvAlias | Out-Null
 
@@ -56,13 +61,19 @@ Write-Host "==> publishing contracts (gas budget $GasBudget)"
 $outDir = Join-Path $repoRoot "out"
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 $publishRaw = Join-Path $outDir "publish-devnet.raw"
+$publishErr = Join-Path $outDir "publish-devnet.err"
 $contractsDir = Join-Path $repoRoot "contracts"
 
-sui client publish $contractsDir --gas-budget $GasBudget --json 2>&1 |
-    Tee-Object -FilePath $publishRaw
+# Stderr stays in its own file so the JSON body in `$publishRaw` is never
+# interleaved with progress lines. `extract-publish-ids.py` slices from the
+# first `{`, and that heuristic only holds if stdout is JSON-only.
+sui client publish $contractsDir --gas-budget $GasBudget --json `
+    1> $publishRaw 2> $publishErr
 
 if ($LASTEXITCODE -ne 0) {
-    throw "sui publish failed; full output captured at $publishRaw"
+    Write-Host "----- stderr -----"
+    if (Test-Path $publishErr) { Get-Content $publishErr | Write-Host }
+    throw "sui publish failed; stdout at $publishRaw, stderr at $publishErr"
 }
 
 Write-Host "==> extracting package + registry ids"
