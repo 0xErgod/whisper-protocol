@@ -224,9 +224,9 @@ fun zero_bytes(n: u64): vector<u8> {
 fun verify_pedersen_opens_to_rejects_garbage_proof() {
     // Groth16-BN254 proof is three group elements: 32 + 64 + 32 = 128
     // bytes in arkworks' compressed encoding. A zero-byte buffer of
-    // that length is well-formed shape-wise but encodes the identity
-    // points, which fail pairing checks — the verifier returns false
-    // and the assert! fires.
+    // that length is well-formed shape-wise but decodes to
+    // invalid/degenerate proof points; the native verifier returns
+    // false (rather than aborting natively) and our assert! fires.
     verify_pedersen_opens_to(0, 0, 0, 0, zero_bytes(128));
 }
 
