@@ -119,6 +119,12 @@ const VK_ENVELOPE_OPEN_AT_0: vector<u8> = vector[
 /// public inputs in circuit order. The proof bytes follow
 /// arkworks' canonical compressed encoding (the form
 /// `prover::serialize_proof` produces).
+///
+/// Declared `public fun` (not `entry`) so other modules (e.g. the
+/// future `commitments::open_with_proof` in Phase 5 / issue #39)
+/// can compose verification atomically with state mutation. SDK
+/// callers reach this via `MoveCall` inside a PTB; an `entry`
+/// wrapper is not currently exposed.
 public fun verify_pedersen_opens_to(
     commitment_x: u256,
     commitment_y: u256,
@@ -149,6 +155,9 @@ public fun verify_pedersen_opens_to(
 /// `claimed_value` revealed at stream position 0. The verifier
 /// reconstructs `signal` off chain from the on-chain envelope —
 /// see the circuit spec.
+///
+/// `public fun` (not `entry`) for the same composition reason
+/// documented on `verify_pedersen_opens_to`.
 public fun verify_envelope_open_at_0(
     signal: u256,
     claimed_value: u256,
@@ -191,4 +200,37 @@ fun pack_public_inputs(inputs: &vector<u256>): vector<u8> {
         i = i + 1;
     };
     out
+}
+
+#[test_only]
+fun zero_bytes(n: u64): vector<u8> {
+    let mut out = vector[];
+    let mut i = 0;
+    while (i < n) {
+        out.push_back(0);
+        i = i + 1;
+    };
+    out
+}
+
+// Both verify_* functions go through `verify_groth16_proof`, which
+// returns `false` for any non-matching proof rather than aborting
+// inside the native bindings. Our `assert!` then aborts with
+// `E_INVALID_PROOF`. The test below pins that path; it does NOT
+// exercise the happy path, which needs a real proof (deferred to
+// off-chain integration per the design lock on issue #36).
+
+#[test, expected_failure(abort_code = E_INVALID_PROOF)]
+fun verify_pedersen_opens_to_rejects_garbage_proof() {
+    // Groth16-BN254 proof is three group elements: 32 + 64 + 32 = 128
+    // bytes in arkworks' compressed encoding. A zero-byte buffer of
+    // that length is well-formed shape-wise but encodes the identity
+    // points, which fail pairing checks — the verifier returns false
+    // and the assert! fires.
+    verify_pedersen_opens_to(0, 0, 0, 0, zero_bytes(128));
+}
+
+#[test, expected_failure(abort_code = E_INVALID_PROOF)]
+fun verify_envelope_open_at_0_rejects_garbage_proof() {
+    verify_envelope_open_at_0(0, 0, zero_bytes(128));
 }

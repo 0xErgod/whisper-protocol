@@ -222,7 +222,6 @@ pub fn deserialize_vk(bytes: &[u8]) -> ProverResult<CircuitVerifyingKey> {
     Ok(vk)
 }
 
-
 /// Serialize a proof to bytes. The on-chain verifier reads this
 /// alongside the public inputs.
 pub fn serialize_proof(proof: &CircuitProof) -> ProverResult<Vec<u8>> {

@@ -118,6 +118,14 @@ entry fun open_secret(
     clock: &Clock,
 ) {
     assert!(!commitment.opened, E_ALREADY_OPENED);
+    // The native `crates/protocol::commitment` accepts an empty stream
+    // (the "no content with hiding" degenerate case — commits to just
+    // `blinding · H`). The on-chain commit path here doesn't refuse
+    // those either: it stores whatever point the caller supplied. We
+    // refuse to *open* with an empty stream, though, because an
+    // empty-stream opening reveals nothing useful to a reader and is
+    // almost always a client bug (forgot to pass the stream). If a
+    // future use case wants empty-stream opens, drop this assert.
     assert!(stream.length() > 0, E_EMPTY_STREAM);
 
     let opened_at_ms = clock::timestamp_ms(clock);
