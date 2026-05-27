@@ -1,44 +1,47 @@
-/// Public commit/open of text secrets.
+/// Public commit/open of payload-shaped secrets.
 ///
-/// `commit_secret` posts a salted hash of an encoded text secret on
-/// chain without revealing the secret. The caller keeps `(secret, salt)`
-/// off chain. Later, `open_secret` reveals both publicly via a
-/// `SecretOpened` event so anyone can verify
-/// `H(domain || encoded_secret || salt) == commitment.commitment`.
+/// `commit_secret` posts a vector Pedersen commitment on chain
+/// without revealing the underlying payload. The caller keeps
+/// `(stream, blinding)` off chain. Later, `open_secret` reveals
+/// both publicly via a `SecretOpened` event so anyone can verify
+/// `commit(encoding_id || stream, blinding).point == (commitment_x, commitment_y)`.
 ///
-/// Hash verification is intentionally client-side. This is the spec's
-/// PoC pattern: cheaper gas, simpler contract, and verification can be
-/// re-run independently by any reader. A future iteration may add
-/// on-chain hash assertion for game-enforced reveals.
+/// The commitment construction is pinned in
+/// [`specs/protocol-commitment.md`](../../specs/protocol-commitment.md):
+/// a Baby Jubjub vector Pedersen commitment with the payload's
+/// `encoding_id` committed at generator slot `G_0`, and the stream
+/// elements at `G_1..G_n`. The encoding id is also stored as a
+/// public field on the struct for fast off-chain decoder dispatch,
+/// but its presence inside the commitment point is what makes it
+/// cryptographically *bound* (not merely labelled).
 ///
-/// Commitment objects are owned by the author. Sui ownership is the
-/// authorization story for `open_secret` — only the author can pass
-/// `&mut SecretCommitment` into the entry function. Readers reconstruct
-/// state from `SecretCommitted` / `SecretOpened` events.
-module secret_sharing_poc::commitments;
+/// On-chain opening verification is intentionally NOT done here —
+/// this is the PoC pattern: cheaper gas, simpler contract, and
+/// verification can be re-run independently by any reader given
+/// the event payload. The future ZK-verified open (Phase 5,
+/// `proofs.move`) will let a third party become convinced that
+/// the prover knows an opening without the opening leaving their
+/// machine.
+///
+/// Commitment objects are owned by the author. Sui ownership is
+/// the authorization story for `open_secret` — only the author
+/// can pass `&mut SecretCommitment` into the entry function.
+/// Readers reconstruct state from `SecretCommitted` / `SecretOpened`
+/// events.
+module whisper_protocol::commitments;
 
 use sui::clock::{Self, Clock};
 use sui::event;
 
-const E_EMPTY_FIELD: u64 = 0;
-const E_TOO_LARGE: u64 = 1;
 const E_ALREADY_OPENED: u64 = 100;
-
-const MAX_SCHEMA_BYTES: u64 = 64;
-const MAX_HASH_SCHEME_BYTES: u64 = 64;
-const MAX_COMMITMENT_BYTES: u64 = 64;
-const MAX_SECRET_BYTES: u64 = 4096;
-const MAX_SALT_BYTES: u64 = 64;
-
-const CURRENT_COMMITMENT_FORMAT_VERSION: u16 = 1;
+const E_EMPTY_STREAM: u64 = 101;
 
 public struct SecretCommitment has key, store {
     id: UID,
-    format_version: u16,
     author: address,
-    schema: vector<u8>,
-    hash_scheme: vector<u8>,
-    commitment: vector<u8>,
+    encoding_id: u256,
+    commitment_x: u256,
+    commitment_y: u256,
     created_at_ms: u64,
     opened: bool,
     opened_at_ms: u64,
@@ -46,56 +49,50 @@ public struct SecretCommitment has key, store {
 
 public struct SecretCommitted has copy, drop {
     commitment_id: ID,
-    format_version: u16,
     author: address,
-    schema: vector<u8>,
-    hash_scheme: vector<u8>,
-    commitment: vector<u8>,
+    encoding_id: u256,
+    commitment_x: u256,
+    commitment_y: u256,
     created_at_ms: u64,
 }
 
 public struct SecretOpened has copy, drop {
     commitment_id: ID,
     author: address,
-    schema: vector<u8>,
-    hash_scheme: vector<u8>,
-    commitment: vector<u8>,
-    encoded_secret: vector<u8>,
-    salt: vector<u8>,
+    encoding_id: u256,
+    commitment_x: u256,
+    commitment_y: u256,
+    stream: vector<u256>,
+    blinding: u256,
     opened_at_ms: u64,
 }
-
-public fun current_commitment_format_version(): u16 { CURRENT_COMMITMENT_FORMAT_VERSION }
 
 public fun is_opened(c: &SecretCommitment): bool { c.opened }
 
 public fun author_of(c: &SecretCommitment): address { c.author }
 
-public fun commitment_bytes_of(c: &SecretCommitment): &vector<u8> { &c.commitment }
+public fun encoding_id_of(c: &SecretCommitment): u256 { c.encoding_id }
 
-public fun schema_of(c: &SecretCommitment): &vector<u8> { &c.schema }
+public fun commitment_x_of(c: &SecretCommitment): u256 { c.commitment_x }
+
+public fun commitment_y_of(c: &SecretCommitment): u256 { c.commitment_y }
 
 entry fun commit_secret(
-    schema: vector<u8>,
-    hash_scheme: vector<u8>,
-    commitment: vector<u8>,
+    encoding_id: u256,
+    commitment_x: u256,
+    commitment_y: u256,
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert_non_empty_and_max(&schema, MAX_SCHEMA_BYTES);
-    assert_non_empty_and_max(&hash_scheme, MAX_HASH_SCHEME_BYTES);
-    assert_non_empty_and_max(&commitment, MAX_COMMITMENT_BYTES);
-
     let author = tx_context::sender(ctx);
     let created_at_ms = clock::timestamp_ms(clock);
 
     let obj = SecretCommitment {
         id: object::new(ctx),
-        format_version: CURRENT_COMMITMENT_FORMAT_VERSION,
         author,
-        schema: copy schema,
-        hash_scheme: copy hash_scheme,
-        commitment: copy commitment,
+        encoding_id,
+        commitment_x,
+        commitment_y,
         created_at_ms,
         opened: false,
         opened_at_ms: 0,
@@ -104,11 +101,10 @@ entry fun commit_secret(
 
     event::emit(SecretCommitted {
         commitment_id,
-        format_version: CURRENT_COMMITMENT_FORMAT_VERSION,
         author,
-        schema,
-        hash_scheme,
-        commitment,
+        encoding_id,
+        commitment_x,
+        commitment_y,
         created_at_ms,
     });
 
@@ -117,13 +113,20 @@ entry fun commit_secret(
 
 entry fun open_secret(
     commitment: &mut SecretCommitment,
-    encoded_secret: vector<u8>,
-    salt: vector<u8>,
+    stream: vector<u256>,
+    blinding: u256,
     clock: &Clock,
 ) {
     assert!(!commitment.opened, E_ALREADY_OPENED);
-    assert_non_empty_and_max(&encoded_secret, MAX_SECRET_BYTES);
-    assert_non_empty_and_max(&salt, MAX_SALT_BYTES);
+    // The native `crates/protocol::commitment` accepts an empty stream
+    // (the "no content with hiding" degenerate case — commits to just
+    // `blinding · H`). The on-chain commit path here doesn't refuse
+    // those either: it stores whatever point the caller supplied. We
+    // refuse to *open* with an empty stream, though, because an
+    // empty-stream opening reveals nothing useful to a reader and is
+    // almost always a client bug (forgot to pass the stream). If a
+    // future use case wants empty-stream opens, drop this assert.
+    assert!(stream.length() > 0, E_EMPTY_STREAM);
 
     let opened_at_ms = clock::timestamp_ms(clock);
     commitment.opened = true;
@@ -132,19 +135,13 @@ entry fun open_secret(
     event::emit(SecretOpened {
         commitment_id: object::id(commitment),
         author: commitment.author,
-        schema: commitment.schema,
-        hash_scheme: commitment.hash_scheme,
-        commitment: commitment.commitment,
-        encoded_secret,
-        salt,
+        encoding_id: commitment.encoding_id,
+        commitment_x: commitment.commitment_x,
+        commitment_y: commitment.commitment_y,
+        stream,
+        blinding,
         opened_at_ms,
     });
-}
-
-fun assert_non_empty_and_max(bytes: &vector<u8>, max: u64) {
-    let len = bytes.length();
-    assert!(len > 0, E_EMPTY_FIELD);
-    assert!(len <= max, E_TOO_LARGE);
 }
 
 #[test]
@@ -156,11 +153,10 @@ fun commit_creates_unopened_commitment() {
     let author = @0xA;
     let obj = SecretCommitment {
         id: object::new(ctx),
-        format_version: CURRENT_COMMITMENT_FORMAT_VERSION,
         author,
-        schema: b"asset_location_v1",
-        hash_scheme: b"blake2b-256",
-        commitment: b"\x01\x02\x03\x04",
+        encoding_id: 0xAAAA,
+        commitment_x: 0x1111,
+        commitment_y: 0x2222,
         created_at_ms: 100,
         opened: false,
         opened_at_ms: 0,
@@ -168,8 +164,9 @@ fun commit_creates_unopened_commitment() {
 
     assert!(!obj.opened, 300);
     assert!(obj.author == author, 301);
-    assert!(obj.format_version == CURRENT_COMMITMENT_FORMAT_VERSION, 302);
-    assert!(obj.commitment == b"\x01\x02\x03\x04", 303);
+    assert!(obj.encoding_id == 0xAAAA, 302);
+    assert!(obj.commitment_x == 0x1111, 303);
+    assert!(obj.commitment_y == 0x2222, 304);
 
     transfer::public_transfer(obj, author);
     clock::destroy_for_testing(clock);
@@ -184,18 +181,17 @@ fun open_marks_opened_true_and_records_timestamp() {
 
     let mut obj = SecretCommitment {
         id: object::new(ctx),
-        format_version: CURRENT_COMMITMENT_FORMAT_VERSION,
         author,
-        schema: b"asset_location_v1",
-        hash_scheme: b"blake2b-256",
-        commitment: b"\x01\x02\x03\x04",
+        encoding_id: 0xAAAA,
+        commitment_x: 0x1111,
+        commitment_y: 0x2222,
         created_at_ms: 50,
         opened: false,
         opened_at_ms: 0,
     };
 
     clock::set_for_testing(&mut clock, 200);
-    open_secret(&mut obj, b"asset_id=fortress-001;x=42;y=9", b"salt-bytes", &clock);
+    open_secret(&mut obj, vector[1, 2, 3], 0xBEEF, &clock);
 
     assert!(obj.opened, 310);
     assert!(obj.opened_at_ms == 200, 311);
@@ -213,25 +209,24 @@ fun double_open_is_rejected() {
 
     let mut obj = SecretCommitment {
         id: object::new(ctx),
-        format_version: CURRENT_COMMITMENT_FORMAT_VERSION,
         author,
-        schema: b"asset_location_v1",
-        hash_scheme: b"blake2b-256",
-        commitment: b"\x01\x02\x03\x04",
+        encoding_id: 0xAAAA,
+        commitment_x: 0x1111,
+        commitment_y: 0x2222,
         created_at_ms: 50,
         opened: false,
         opened_at_ms: 0,
     };
 
-    open_secret(&mut obj, b"first-open", b"salt-1", &clock);
-    open_secret(&mut obj, b"second-open", b"salt-2", &clock);
+    open_secret(&mut obj, vector[1, 2, 3], 0xAAA, &clock);
+    open_secret(&mut obj, vector[4, 5, 6], 0xBBB, &clock);
 
     transfer::public_transfer(obj, author);
     clock::destroy_for_testing(clock);
 }
 
-#[test, expected_failure(abort_code = E_EMPTY_FIELD)]
-fun open_with_empty_secret_is_rejected() {
+#[test, expected_failure(abort_code = E_EMPTY_STREAM)]
+fun open_with_empty_stream_is_rejected() {
     let ctx = &mut tx_context::dummy();
     let mut clock = clock::create_for_testing(ctx);
     clock::set_for_testing(&mut clock, 50);
@@ -239,35 +234,17 @@ fun open_with_empty_secret_is_rejected() {
 
     let mut obj = SecretCommitment {
         id: object::new(ctx),
-        format_version: CURRENT_COMMITMENT_FORMAT_VERSION,
         author,
-        schema: b"asset_location_v1",
-        hash_scheme: b"blake2b-256",
-        commitment: b"\x01\x02",
+        encoding_id: 0xAAAA,
+        commitment_x: 0x1111,
+        commitment_y: 0x2222,
         created_at_ms: 50,
         opened: false,
         opened_at_ms: 0,
     };
 
-    open_secret(&mut obj, b"", b"salt", &clock);
+    open_secret(&mut obj, vector[], 0xBEEF, &clock);
 
     transfer::public_transfer(obj, author);
-    clock::destroy_for_testing(clock);
-}
-
-#[test, expected_failure(abort_code = E_TOO_LARGE)]
-fun commit_with_oversized_commitment_bytes_is_rejected() {
-    let ctx = &mut tx_context::dummy();
-    let mut clock = clock::create_for_testing(ctx);
-    clock::set_for_testing(&mut clock, 50);
-    let mut bad_commitment = vector[];
-    let mut i = 0;
-    while (i <= MAX_COMMITMENT_BYTES) {
-        bad_commitment.push_back(0);
-        i = i + 1;
-    };
-
-    commit_secret(b"schema", b"blake2b-256", bad_commitment, &clock, ctx);
-
     clock::destroy_for_testing(clock);
 }

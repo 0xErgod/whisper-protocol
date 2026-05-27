@@ -1,5 +1,5 @@
 [package]
-name = "secret_sharing_poc"
+name = "whisper_protocol"
 edition = "2024"
 
 [dependencies]
