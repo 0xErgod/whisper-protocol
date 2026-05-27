@@ -1,9 +1,10 @@
 // Per-concern Move module names. The package was split into one
 // module per primitive so the SDK has to address each by name.
-export const MODULE_FACADE = "secret_sharing";
+export const MODULE_FACADE = "whisper";
 export const MODULE_REGISTRY = "registry";
 export const MODULE_ENVELOPES = "envelopes";
 export const MODULE_COMMITMENTS = "commitments";
+export const MODULE_PROOFS = "proofs";
 
 /** @deprecated Use the per-concern MODULE_* constants. Kept for any
  *  external consumer that still imports `MODULE`. */
@@ -72,7 +73,8 @@ export const HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1 = "poseidon-bn254-circomlib
 // value under a different protocol layer.
 export const COMMITMENT_DOMAIN_V1 = "sui-secret-commitment-v1";
 
-// Bumped manually when wire-incompatible changes ship. The on-chain Move
-// module exposes the same value via `protocol_version()` so the SDK can
-// refuse to talk to a registry it doesn't understand.
-export const SDK_PROTOCOL_VERSION = 5;
+// The on-chain Move module exposes this via `protocol_version()`; the
+// SDK reads it at boot and refuses to write if the deployed package
+// doesn't match. Pinned at 1 for the whisper_protocol package — a
+// schema break publishes a new package id rather than bumping this.
+export const SDK_PROTOCOL_VERSION = 1;

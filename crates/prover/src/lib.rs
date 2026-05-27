@@ -201,8 +201,14 @@ pub fn deserialize_pk(bytes: &[u8]) -> ProverResult<CircuitProvingKey> {
     Ok(pk)
 }
 
-/// Serialize a verifying key to bytes. The Move-side verifier
-/// reads this exact encoding.
+/// Serialize a verifying key to bytes (arkworks' compressed
+/// canonical encoding).
+///
+/// This is the form Sui's `groth16::prepare_verifying_key`
+/// accepts on chain (per its docstring: "An Arkworks canonical
+/// compressed serialization of a verifying key"). It's also the
+/// form the off-chain `prover-server` persists and serves over
+/// HTTP — one encoding for both consumers.
 pub fn serialize_vk(vk: &CircuitVerifyingKey) -> ProverResult<Vec<u8>> {
     let mut bytes = Vec::new();
     vk.serialize_compressed(&mut bytes)?;
@@ -215,6 +221,7 @@ pub fn deserialize_vk(bytes: &[u8]) -> ProverResult<CircuitVerifyingKey> {
     let vk = CircuitVerifyingKey::deserialize_compressed(bytes)?;
     Ok(vk)
 }
+
 
 /// Serialize a proof to bytes. The on-chain verifier reads this
 /// alongside the public inputs.

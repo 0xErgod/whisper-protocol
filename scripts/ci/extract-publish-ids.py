@@ -55,16 +55,22 @@ def main(argv: list[str]) -> None:
     if not package_id:
         fail("no `published` entry in objectChanges")
 
+    # `KeyRegistry` is defined in the `registry` module. Historical
+    # deployments from before the module split (pre-#27) carried the
+    # type inline in `secret_sharing`; the `endswith("::registry::KeyRegistry")`
+    # check matches the current layout regardless of the parent
+    # package name (`secret_sharing_poc` historically, `whisper_protocol`
+    # post-#36).
     registry_id = next(
         (
             c.get("objectId")
             for c in changes
-            if (c.get("objectType") or "").endswith("::secret_sharing::KeyRegistry")
+            if (c.get("objectType") or "").endswith("::registry::KeyRegistry")
         ),
         None,
     )
     if not registry_id:
-        fail("no KeyRegistry entry in objectChanges")
+        fail("no `::registry::KeyRegistry` entry in objectChanges")
 
     digest = data.get("digest")
     if not digest:

@@ -37,6 +37,75 @@ function Require-Cmd($name) {
 Require-Cmd sui
 Require-Cmd python
 Require-Cmd pnpm
+Require-Cmd cargo
+
+# --- VK drift guard --------------------------------------------------------
+#
+# `contracts/sources/proofs.move` embeds each circuit's Groth16 verifying
+# key as a `const VK_*: vector<u8>` byte array. Those bytes are deterministic
+# given the trusted-setup seed pinned in `crates/prover-server/src/keys.rs`
+# (and re-pinned in `crates/prover/src/bin/export-vks.rs`). If the Move
+# source has drifted from what the seed would produce today — say, the
+# circuit code changed — the on-chain verifier will reject every proof the
+# prover-server emits, but the build still passes. The drift only surfaces
+# end-to-end. We catch it here, before publish, by rebuilding the VKs and
+# byte-diffing against the source.
+#
+# Comparison is on the extracted byte arrays only (the hex literals inside
+# `const VK_*: vector<u8> = vector[ ... ];` blocks), not the surrounding
+# text, so docstring or whitespace edits in proofs.move don't false-flag.
+
+function Get-VkByteArrays {
+    param([string]$Text)
+    # Match `const NAME: vector<u8> = vector[ ... ];` blocks, capture the
+    # name and the body. The body is whitespace + 0x.. literals + commas.
+    $pattern = '(?ms)const\s+(VK_[A-Z0-9_]+)\s*:\s*vector<u8>\s*=\s*vector\[(.*?)\]\s*;'
+    $matches = [regex]::Matches($Text, $pattern)
+    $out = @{}
+    foreach ($m in $matches) {
+        $name = $m.Groups[1].Value
+        $body = $m.Groups[2].Value
+        # Pull every `0xXX` into a normalized hex stream so whitespace/comments
+        # inside the body never affect the comparison.
+        $bytes = [regex]::Matches($body, '0x[0-9a-fA-F]{2}') | ForEach-Object { $_.Value.ToLower() }
+        $out[$name] = ($bytes -join ',')
+    }
+    return $out
+}
+
+Write-Host "==> rebuilding verifying keys to check for drift vs proofs.move"
+$exportOut = cargo run --release --quiet --bin export-vks -p prover 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "export-vks failed; cannot validate VK drift. Re-run 'cargo build --release --bin export-vks -p prover' and inspect."
+}
+$exportText = ($exportOut -join "`n")
+
+$proofsMovePath = Join-Path $repoRoot "contracts/sources/proofs.move"
+if (-not (Test-Path $proofsMovePath)) {
+    throw "proofs.move not found at $proofsMovePath"
+}
+$proofsSource = Get-Content $proofsMovePath -Raw
+
+$expected = Get-VkByteArrays -Text $exportText
+$actual   = Get-VkByteArrays -Text $proofsSource
+
+if ($expected.Count -eq 0) { throw "export-vks produced no VK_* blocks; refusing to deploy" }
+
+foreach ($name in $expected.Keys) {
+    if (-not $actual.ContainsKey($name)) {
+        throw "proofs.move is missing const ${name}. Regenerate via 'cargo run --release --bin export-vks -p prover' and paste the result."
+    }
+    if ($expected[$name] -ne $actual[$name]) {
+        throw "VK drift detected for $name. The bytes in proofs.move do not match the seed-determined VK. Regenerate via 'cargo run --release --bin export-vks -p prover' and update proofs.move before deploying."
+    }
+    Write-Host "    $name OK ($(($expected[$name] -split ',').Count) bytes)"
+}
+
+foreach ($name in $actual.Keys) {
+    if (-not $expected.ContainsKey($name)) {
+        Write-Host "    WARN: proofs.move has $name but export-vks does not produce it. Stale constant?"
+    }
+}
 
 Write-Host "==> ensuring sui client env '$EnvAlias' points at $Rpc"
 # `sui client envs --json` returns a two-element array: the envs list,
