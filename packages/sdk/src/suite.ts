@@ -108,11 +108,11 @@ export function seal(args: {
 }): Envelope {
   const shared = cryptoWasm.ecdh(args.senderSeed, args.recipientPkX, args.recipientPkY);
 
-  const cipherTag = cryptoWasm.domain_tag(CIPHER_ROLE);
-  const macTag = cryptoWasm.domain_tag(MAC_ROLE);
+  const cipherRoleTag = cryptoWasm.domain_tag(CIPHER_ROLE);
+  const macRoleTag = cryptoWasm.domain_tag(MAC_ROLE);
 
-  const keyEnc = cryptoWasm.kdf_derive(shared.x, shared.y, [cipherTag, args.envelopeId]);
-  const keyMac = cryptoWasm.kdf_derive(shared.x, shared.y, [macTag, args.envelopeId]);
+  const keyEnc = cryptoWasm.kdf_derive(shared.x, shared.y, [cipherRoleTag, args.envelopeId]);
+  const keyMac = cryptoWasm.kdf_derive(shared.x, shared.y, [macRoleTag, args.envelopeId]);
 
   const ciphertext = cryptoWasm.cipher_encrypt(keyEnc, args.payload.stream);
   const tag = cryptoWasm.mac(keyMac, macInput(args.payload.encodingId, ciphertext));
@@ -159,15 +159,15 @@ export function open(args: {
 
   const shared = cryptoWasm.ecdh(args.recipientSeed, envelope.senderPkX, envelope.senderPkY);
 
-  const cipherTag = cryptoWasm.domain_tag(CIPHER_ROLE);
-  const macTag = cryptoWasm.domain_tag(MAC_ROLE);
+  const cipherRoleTag = cryptoWasm.domain_tag(CIPHER_ROLE);
+  const macRoleTag = cryptoWasm.domain_tag(MAC_ROLE);
 
-  const keyMac = cryptoWasm.kdf_derive(shared.x, shared.y, [macTag, envelope.envelopeId]);
+  const keyMac = cryptoWasm.kdf_derive(shared.x, shared.y, [macRoleTag, envelope.envelopeId]);
   if (!cryptoWasm.mac_verify(keyMac, macInput(envelope.encodingId, envelope.ciphertext), envelope.macTag)) {
     throw new WhisperOpenError({ kind: "mac-failure" });
   }
 
-  const keyEnc = cryptoWasm.kdf_derive(shared.x, shared.y, [cipherTag, envelope.envelopeId]);
+  const keyEnc = cryptoWasm.kdf_derive(shared.x, shared.y, [cipherRoleTag, envelope.envelopeId]);
   const stream = cryptoWasm.cipher_decrypt(keyEnc, envelope.ciphertext);
 
   return {
