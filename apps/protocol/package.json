@@ -12,12 +12,8 @@
   "dependencies": {
     "@mysten/dapp-kit": "^0.18.0",
     "@mysten/sui": "1.38.0",
-    "@noble/ciphers": "^1.0.0",
-    "@noble/curves": "^1.6.0",
-    "@noble/hashes": "^1.5.0",
     "@tanstack/react-query": "^5.62.7",
     "@whisper-protocol/sdk": "workspace:*",
-    "@whisper-protocol/wallet-derived-keys": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -26,6 +22,8 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "typescript": "^5.6.3",
-    "vite": "^6.0.1"
+    "vite": "^6.0.1",
+    "vite-plugin-top-level-await": "^1.4.4",
+    "vite-plugin-wasm": "^3.4.0"
   }
 }

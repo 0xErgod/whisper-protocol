@@ -2,14 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ConnectButton,
 } from "@mysten/dapp-kit";
-import { bytesToHex } from "@noble/hashes/utils";
 import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
-  ENCRYPTION_SCHEME,
   normalizeAddress,
+  type DerivedBabyJubKeypair,
   type RegistryEntry,
 } from "@whisper-protocol/sdk";
-import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
 import type { WhisperKeysState } from "../whisper/useWhisperKeys";
 import { whisper, suiClient } from "../whisper/client";
 import type { ActiveAccount, DemoMode, TxExecutor } from "../whisper/session";
@@ -25,6 +23,11 @@ interface Props {
   devEnabled: boolean;
   devAccounts: DevAccountSummary[];
   onSelectDevAccount: (label: string) => void;
+}
+
+function shortCoord(s: string): string {
+  if (s.length <= 14) return s;
+  return `${s.slice(0, 6)}…${s.slice(-6)}`;
 }
 
 export function IdentityBar({
@@ -49,25 +52,27 @@ export function IdentityBar({
 
   const registeredKeyMatches = useMemo(() => {
     if (!myEntry || !keysState.keys) return null;
-    const onChain = bytesToHex(myEntry.encryptionPubkey);
-    const local = bytesToHex(keysState.keys.encryptionPublicKey);
-    return onChain === local;
+    return (
+      myEntry.pubkeyX === keysState.keys.pubkeyX &&
+      myEntry.pubkeyY === keysState.keys.pubkeyY
+    );
   }, [myEntry, keysState.keys]);
 
-  // Fade the success toast out a few seconds after the registry entry
-  // has caught up. We watch myEntry to know the chain confirmed.
   useEffect(() => {
     if (!regSuccess) return;
     const t = setTimeout(() => setRegSuccess(null), 8000);
     return () => clearTimeout(t);
   }, [regSuccess]);
 
-  async function registerKey(keys: DerivedEncryptionKeypair) {
+  async function registerKey(keys: DerivedBabyJubKeypair) {
     setRegistering(true);
     setRegError(null);
     setRegSuccess(null);
     try {
-      const tx = whisper.buildRegisterKeyTx(keys.encryptionPublicKey);
+      const tx = whisper.buildRegisterKeyTx({
+        pubkeyX: keys.pubkeyX,
+        pubkeyY: keys.pubkeyY,
+      });
       if (!txExecutor) throw new Error("no transaction signer available");
       const result = await txExecutor(tx);
       const full: SuiTransactionBlockResponse = await suiClient.waitForTransaction({
@@ -253,20 +258,11 @@ export function IdentityBar({
       {account && keysState.keys && (
         <div className="identity-bar-foot">
           <span style={{ color: "var(--text-faint)" }}>local pubkey</span>
-          <RawId
-            value={`0x${bytesToHex(keysState.keys.encryptionPublicKey)}`}
-            kind="bytes"
-          />
+          <span className="mono-trunc" style={{ color: "var(--text-dim)" }}>
+            ({shortCoord(keysState.keys.pubkeyX)}, {shortCoord(keysState.keys.pubkeyY)})
+          </span>
           <span className="identity-foot-spacer" />
-          {keysState.signPath && (
-            <span className="identity-foot-scheme">
-              path{" "}
-              {keysState.signPath === "derive-signature"
-                ? "misc:deriveSignature"
-                : "personal-message"}
-            </span>
-          )}
-          <span className="identity-foot-scheme">suite {ENCRYPTION_SCHEME}</span>
+          <span className="identity-foot-scheme">suite babyjub+poseidon</span>
         </div>
       )}
     </div>

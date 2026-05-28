@@ -1,22 +1,18 @@
 import { Transaction } from "@mysten/sui/transactions";
 import type { SuiClient } from "@mysten/sui/client";
-import {
-  CURRENT_ENVELOPE_FORMAT_VERSION,
-  ENCRYPTION_SCHEME_UNIFIED,
-  MODULE_FACADE,
-} from "./constants.js";
+import { MODULE_FACADE } from "./constants.js";
 import { WriteCompatibilityError } from "./errors.js";
-import { assertSupportedEnvelopeFormatVersion } from "./envelope-codec.js";
-import { requireUnifiedEncryptionSuite } from "./suites-unified.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-export interface AssertWriteCompatibleOptions {
-  expectedProtocolVersion: number;
-  formatVersion?: number;
-  encryptionScheme?: string;
-}
-
+/**
+ * Read the deployed package's `protocol_version()` via dev-inspect.
+ *
+ * The single-suite design means there's no encryption-scheme dispatch
+ * to verify against — the package id uniquely identifies the schema.
+ * This function just answers "is the deployed package the version
+ * this SDK was built against?".
+ */
 export async function readOnChainProtocolVersion(
   suiClient: SuiClient,
   packageId: string,
@@ -61,25 +57,26 @@ export async function readOnChainProtocolVersion(
   ) >>> 0;
 }
 
+export interface AssertWriteCompatibleOptions {
+  expectedProtocolVersion: number;
+}
+
+/**
+ * Refuse to write against a deployment whose `protocol_version`
+ * doesn't match what this SDK was built against.
+ *
+ * Returns the on-chain version on success; throws
+ * `WriteCompatibilityError` on mismatch.
+ */
 export async function assertWriteCompatible(
   suiClient: SuiClient,
   packageId: string,
   options: AssertWriteCompatibleOptions,
 ): Promise<number> {
-  const formatVersion = options.formatVersion ?? CURRENT_ENVELOPE_FORMAT_VERSION;
-  const encryptionScheme = options.encryptionScheme ?? ENCRYPTION_SCHEME_UNIFIED;
-  assertSupportedEnvelopeFormatVersion(formatVersion);
-  // Write-compatibility means "can the SDK *write* envelopes the
-  // current package will accept?" Since v5 is the only suite the SDK
-  // produces, the write check looks up the unified registry, not the
-  // historical single-recipient one (which exists only for legacy
-  // reads).
-  requireUnifiedEncryptionSuite(encryptionScheme);
-
   const onChain = await readOnChainProtocolVersion(suiClient, packageId);
   if (onChain !== options.expectedProtocolVersion) {
     throw new WriteCompatibilityError(
-      `Whisper write compatibility mismatch: deployed package ${packageId} reports protocol_version=${onChain}, but this SDK expects ${options.expectedProtocolVersion} for format_version=${formatVersion} and suite=${encryptionScheme}.`,
+      `Whisper write compatibility mismatch: deployed package ${packageId} reports protocol_version=${onChain}, but this SDK expects ${options.expectedProtocolVersion}.`,
     );
   }
   return onChain;

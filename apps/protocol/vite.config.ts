@@ -1,5 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import wasm from "vite-plugin-wasm";
+import topLevelAwait from "vite-plugin-top-level-await";
 
 // `base` controls the URL prefix Vite emits for `<script>` / asset URLs in
 // the built HTML. Locally we want `/` (default) so `pnpm dev:web` and
@@ -11,7 +13,7 @@ const PAGES_BASE = process.env.VITE_PAGES_BASE ?? "/";
 
 export default defineConfig({
   base: PAGES_BASE,
-  plugins: [react()],
+  plugins: [react(), wasm(), topLevelAwait()],
   server: {
     port: 5173,
     proxy: {

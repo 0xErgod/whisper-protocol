@@ -1,13 +1,12 @@
 import { useState } from "react";
-import type { RegistryEntry } from "@whisper-protocol/sdk";
-import type { DerivedEncryptionKeypair } from "@whisper-protocol/wallet-derived-keys";
+import type { DerivedBabyJubKeypair, RegistryEntry } from "@whisper-protocol/sdk";
 import type { ActiveAccount, DemoMode, TxExecutor } from "../whisper/session";
 import { Commit } from "./Commit";
 import { Compose } from "./Compose";
 
 interface Props {
   registry: RegistryEntry[];
-  keys: DerivedEncryptionKeypair | null;
+  keys: DerivedBabyJubKeypair | null;
   account: ActiveAccount | null;
   mode: DemoMode;
   txExecutor: TxExecutor | null;

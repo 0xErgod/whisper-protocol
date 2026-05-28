@@ -194,14 +194,14 @@ export function App() {
         <div className="notice" style={{ marginTop: "1.5rem" }}>
           <strong>{mode === "wallet" ? "SIGN TO UNLOCK" : "DERIVING DEV KEYS"} ·</strong>{" "}
           {mode === "wallet"
-            ? "click derive in the bar above. your wallet will sign a fixed canonical message; we feed the signature through HKDF to derive an X25519 keypair. the signature itself never leaves the browser. cached in indexeddb so you only sign once per device."
-            : "the configured dev signer derives a local X25519 keypair from its personal-message signature path before it can register or decrypt."}
+            ? "click derive in the bar above. your wallet will sign a fixed canonical message; we feed the signature directly into the BabyJubjub keypair-from-seed primitive. the signature itself never leaves the browser. cached in indexeddb so you only sign once per device."
+            : "the configured dev signer derives a local BabyJubjub keypair from its personal-message signature before it can register or decrypt."}
         </div>
       ) : (
         <div className="notice" style={{ marginTop: "1.5rem" }}>
           <strong>READY ·</strong> envelopes addressed to your account decrypt locally using your
-          derived X25519 key. envelopes addressed to other recipients remain ciphertext — no
-          on-chain access control, only cryptographic recipient binding.
+          derived BabyJubjub key. envelopes addressed to other recipients remain ciphertext —
+          no on-chain access control, only cryptographic recipient binding.
         </div>
       )}
 

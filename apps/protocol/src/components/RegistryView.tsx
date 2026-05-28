@@ -1,8 +1,6 @@
-import { bytesToHex } from "@noble/hashes/utils";
 import { normalizeAddress, type RegistryEntry } from "@whisper-protocol/sdk";
 import type { ActiveAccount } from "../whisper/session";
 import { RawId } from "./RawId";
-import { useAudit } from "../perspective/audit";
 
 interface Props {
   entries: RegistryEntry[];
@@ -16,8 +14,12 @@ function formatTime(ms: number): string {
   return d.toISOString().replace("T", " ").slice(5, 19);
 }
 
+function shortCoord(s: string): string {
+  if (s.length <= 12) return s;
+  return `${s.slice(0, 6)}…${s.slice(-6)}`;
+}
+
 export function RegistryView({ entries, loading, account }: Props) {
-  const { rawIds } = useAudit();
   const youAddress = account ? normalizeAddress(account.address) : null;
   return (
     <div className="window">
@@ -33,8 +35,7 @@ export function RegistryView({ entries, loading, account }: Props) {
             <thead>
               <tr>
                 <th>ACCOUNT</th>
-                <th>SCHEME</th>
-                <th>X25519 PUBKEY</th>
+                <th>BJJ PUBKEY (x, y)</th>
                 <th>VER</th>
                 <th>ROTATED</th>
               </tr>
@@ -42,16 +43,14 @@ export function RegistryView({ entries, loading, account }: Props) {
             <tbody>
               {entries.map((e) => {
                 const isYou = youAddress === e.account;
-                const pubHex = bytesToHex(e.encryptionPubkey);
                 return (
                   <tr key={e.account} className={isYou ? "you-row" : undefined}>
                     <td>
                       <RawId value={e.account} kind="address" />
                       {isYou && <span className="you-tag">YOU</span>}
                     </td>
-                    <td style={{ color: "var(--text-dim)" }}>{e.encryptionScheme}</td>
                     <td className="mono-trunc" style={{ color: "var(--text-dim)" }}>
-                      {rawIds ? pubHex : `${pubHex.slice(0, 8)}…${pubHex.slice(-8)}`}
+                      ({shortCoord(e.pubkeyX)}, {shortCoord(e.pubkeyY)})
                     </td>
                     <td>
                       <span className="registry-version">v{e.keyVersion}</span>

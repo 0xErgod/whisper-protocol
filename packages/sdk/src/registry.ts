@@ -1,21 +1,31 @@
 import type { SuiClient } from "@mysten/sui/client";
 import { normalizeAddress } from "./address.js";
-import { idFromUnknown, stringFromBytes } from "./envelope-codec.js";
 
+/**
+ * One entry in the on-chain `KeyRegistry` table. The chain stores the
+ * recipient's BabyJubjub public key as two `u256` coordinates; we
+ * carry them as decimal strings (the form crypto-wasm uses).
+ */
 export interface RegistryEntry {
   account: string;
-  encryptionScheme: string;
-  encryptionPubkey: Uint8Array;
+  pubkeyX: string;
+  pubkeyY: string;
   currentKeyId: string;
   keyVersion: number;
   rotatedAtMs: number;
 }
 
+/**
+ * One immutable `EncryptionKey` object — the per-rotation companion to
+ * a `RegistryEntry`, transferred to the registrant on register. Same
+ * shape as `RegistryEntry` plus its own object id and the registrant
+ * address.
+ */
 export interface EncryptionKeyRecord {
   keyObjectId: string;
   account: string;
-  encryptionScheme: string;
-  encryptionPubkey: Uint8Array;
+  pubkeyX: string;
+  pubkeyY: string;
   keyVersion: number;
   rotatedAtMs: number;
 }
@@ -33,9 +43,18 @@ function fieldValue(content: unknown, key: string): unknown {
   return fields ? fields[key] : undefined;
 }
 
+function idFromUnknown(raw: unknown): string | undefined {
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && "id" in (raw as Record<string, unknown>)) {
+    const inner = (raw as { id?: unknown }).id;
+    if (typeof inner === "string") return inner;
+  }
+  return undefined;
+}
+
 interface RawKeyEntryFields {
-  encryption_scheme?: unknown;
-  encryption_pubkey?: number[];
+  pubkey_x?: string;
+  pubkey_y?: string;
   current_key_id?: unknown;
   key_version?: string;
   rotated_at_ms?: string;
@@ -48,8 +67,8 @@ interface RawEncryptionKeyFields extends RawKeyEntryFields {
 function decodeKeyEntry(account: string, fields: RawKeyEntryFields): RegistryEntry {
   return {
     account: normalizeAddress(account),
-    encryptionScheme: stringFromBytes(fields.encryption_scheme),
-    encryptionPubkey: Uint8Array.from(fields.encryption_pubkey ?? []),
+    pubkeyX: String(fields.pubkey_x ?? "0"),
+    pubkeyY: String(fields.pubkey_y ?? "0"),
     currentKeyId: idFromUnknown(fields.current_key_id) ?? "",
     keyVersion: Number(fields.key_version ?? 0),
     rotatedAtMs: Number(fields.rotated_at_ms ?? 0),
@@ -63,8 +82,8 @@ function decodeEncryptionKeyRecord(
   return {
     keyObjectId,
     account: normalizeAddress(String(fields.account ?? "")),
-    encryptionScheme: stringFromBytes(fields.encryption_scheme),
-    encryptionPubkey: Uint8Array.from(fields.encryption_pubkey ?? []),
+    pubkeyX: String(fields.pubkey_x ?? "0"),
+    pubkeyY: String(fields.pubkey_y ?? "0"),
     keyVersion: Number(fields.key_version ?? 0),
     rotatedAtMs: Number(fields.rotated_at_ms ?? 0),
   };
