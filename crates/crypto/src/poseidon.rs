@@ -70,12 +70,12 @@ pub fn poseidon3(inputs: &[Fq; 3]) -> Fq {
 
 /// Build a domain-tag field element from a short, descriptive UTF-8 string.
 ///
-/// Construction: `bytes_to_field_be(Blake2b-256(domain_string))`. This is
-/// the same construction the TypeScript Poseidon commitment scheme uses
-/// for its `f0` (see `packages/sdk/src/hash-poseidon.ts`), so a Rust and a
-/// TS caller hashing the *same* domain string land on the *same* field
-/// element. Reusing the construction across primitives means one rule, not
-/// per-primitive bespoke encodings.
+/// Construction: `bytes_to_field_be(Blake2b-256(domain_string))`. The
+/// TypeScript side calls the exact same function through the
+/// `crypto-wasm` `domain_tag` binding (this crate compiled to WASM), so
+/// a Rust and a TS caller hashing the *same* domain string land on the
+/// *same* field element. Reusing the construction across primitives
+/// means one rule, not per-primitive bespoke encodings.
 ///
 /// Reduction is via big-endian byte interpretation followed by mod-`p`
 /// reduction (256-bit input into a 254-bit field, so two bits get folded —
