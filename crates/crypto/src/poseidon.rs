@@ -3,7 +3,7 @@
 //! This module is a thin, opinionated wrapper around [`light_poseidon`] —
 //! the only audited Rust Poseidon implementation that produces the same
 //! hash byte-for-byte as `circomlib` / `poseidon-lite` (the TypeScript side
-//! already uses `poseidon-lite`; see `specs/poseidon-commitment-format.md`
+//! already uses `poseidon-lite`; see `specs/protocol-commitment.md`
 //! for the existing rationale, which applies unchanged here).
 //!
 //! `ark-crypto-primitives::sponge::poseidon` is the obvious-looking

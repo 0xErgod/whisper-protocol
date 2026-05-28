@@ -207,7 +207,7 @@ A conformant implementation MUST:
 
 - [`poseidon-hash-fixed-v1.md`](./poseidon-hash-fixed.md) — the
   fixed-arity sibling.
-- [`poseidon-commitment-format.md`](./poseidon-commitment-format.md) —
+- [`protocol-commitment.md`](./protocol-commitment.md) —
   same circomlib parameters and domain-tag construction.
 - Hadeshash / Grain v1 — the SageMath script generating
   circomlib's parameters.

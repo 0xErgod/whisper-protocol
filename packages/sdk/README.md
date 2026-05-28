@@ -3,152 +3,142 @@
 [![npm version](https://img.shields.io/npm/v/@whisper-protocol/sdk.svg)](https://www.npmjs.com/package/@whisper-protocol/sdk)
 [![provenance](https://img.shields.io/badge/npm-provenance-brightgreen)](https://docs.npmjs.com/generating-provenance-statements)
 
-Client SDK for the **Whisper Protocol** — Sui-based private messaging where the ciphertext, sender, recipient, schema, and key version are public on chain but the plaintext is only legible to the addressed recipient.
+Client SDK for the **Whisper Protocol** — Sui-based private messaging on a
+ZK-friendly cryptographic stack (BabyJubjub + Poseidon for envelopes and
+commitments, Groth16-on-BN254 for on-chain proofs).
 
-The SDK exposes pure primitives — encryption, decryption, transaction building, registry queries — and one optional convenience facade (`WhisperClient`). It holds **no secrets**; every encryption call takes the caller's keys as explicit input.
-
-## Read the writeup
-
-The design rationale and threat model live at:
-
-> **[Decentralized Pairwise Secret Communication Protocol over SUI Blockchain](https://thoughtfolio.xyz/Decentralized+Pairwise+Secret+Communication+Protocol+over+SUI+Blockchain)**
-
-This README assumes you've skimmed it and just want to integrate.
-
-## Live demo
-
-Try it without installing anything: **<https://0xergod.github.io/whisper-protocol/>** (Sui testnet). You will need a Sui wallet (Slush, Suiet, etc.) set to **Testnet**.
+The SDK is a thin JavaScript layer over [`crypto-wasm`](https://github.com/0xErgod/whisper-protocol/tree/main/crates/crypto-wasm)
+(the WASM build of the protocol's Rust cryptography): wire codecs, PTB
+builders, registry queries, BJJ key derivation, and a proof client. It
+holds **no secrets** — every operation takes the caller's seed/keys as
+explicit input.
 
 ## Install
 
 ```bash
-npm install @whisper-protocol/sdk
-# or
 pnpm add @whisper-protocol/sdk
 ```
 
-Peer-required: a `SuiClient` from `@mysten/sui` and a way to sign transactions (a wallet adapter, dapp-kit, or a raw `Keypair`).
+Peer-required: a `SuiClient` from `@mysten/sui` and a way to sign
+transactions (a wallet adapter, dapp-kit, or a raw `Keypair`).
+
+> The SDK depends on the `crypto-wasm` package (a `--target bundler`
+> wasm-pack build). Bundlers need `vite-plugin-wasm` (or equivalent);
+> see the demo dApp's `vite.config.ts` for the setup.
 
 ## Quick start
 
 ```ts
 import { SuiClient } from "@mysten/sui/client";
-import { WhisperClient } from "@whisper-protocol/sdk";
-import { TESTNET } from "@whisper-protocol/sdk/networks";
+import {
+  WhisperClient,
+  deriveFromSignature,
+  cryptoWasm,
+} from "@whisper-protocol/sdk";
+import { DEVNET } from "@whisper-protocol/sdk/networks";
 
-const suiClient = new SuiClient({ url: TESTNET.rpcUrl });
+const suiClient = new SuiClient({ url: DEVNET.rpcUrl });
 const whisper = new WhisperClient({
   suiClient,
-  packageId: TESTNET.packageId!,
-  registryId: TESTNET.registryId!,
+  packageId: DEVNET.packageId!,
+  registryId: DEVNET.registryId!,
 });
 
-// Optional but recommended: assert the deployed Move package's
-// protocol_version() matches what this SDK was built for.
-await whisper.assertProtocolCompatible();
+// 1. Derive a BabyJubjub keypair from a wallet signature over the
+//    canonical message. The signature bytes are the seed.
+const keys = deriveFromSignature(walletSignatureBytes, { address: myAddress });
 
-// Build an unsigned transaction that posts an encrypted secret to the
-// recipient. Caller signs and executes it via their wallet.
-const { tx, payload, keyVersion } = await whisper.prepareSend({
+// 2. Register your BJJ public key on chain.
+const regTx = whisper.buildRegisterKeyTx({ pubkeyX: keys.pubkeyX, pubkeyY: keys.pubkeyY });
+await wallet.signAndExecuteTransaction({ transaction: regTx });
+
+// 3. Seal + post an envelope to a registered recipient.
+const stream = cryptoWasm.text_utf8_v1_encode(new TextEncoder().encode("hello"));
+const { tx } = await whisper.prepareSend({
   senderAddress: myAddress,
+  senderSeed: keys.seed,
+  senderPubkeyX: keys.pubkeyX,
+  senderPubkeyY: keys.pubkeyY,
   recipientAddress: bobAddress,
-  plaintext: "fortress at x=42 y=9",
+  envelopeId: freshEnvelopeId(),       // unique per (sender, recipient)
+  payload: { encodingId: cryptoWasm.text_utf8_v1_id(), stream },
 });
+await wallet.signAndExecuteTransaction({ transaction: tx });
 
-const result = await wallet.signAndExecuteTransaction({
-  transaction: tx,
-  chain: "sui:testnet",
+// 4. Recipient side: fetch an envelope and decrypt it.
+const onChain = await whisper.fetchEnvelope(envelopeObjectId);
+const payload = whisper.decryptEnvelope({
+  envelope: onChain!,
+  recipientSeed: keys.seed,
+  recipientPubkeyX: keys.pubkeyX,
+  recipientPubkeyY: keys.pubkeyY,
 });
-
-// Recipient side: pull the inbox and decrypt envelopes addressed to you.
-const inbox = await whisper.fetchInbox(myAddress);
-for (const env of inbox) {
-  const text = whisper.decryptEnvelopeUtf8({
-    envelope: env,
-    recipientAddress: myAddress,
-    recipientPrivateKey: myX25519PrivateKey,
-  });
-  if (text !== null) console.log(`${env.sender}: ${text}`);
-}
+const text = new TextDecoder().decode(cryptoWasm.text_utf8_v1_decode(payload.stream));
 ```
 
-## Where do encryption keys come from?
+## Commitments
 
-The SDK is agnostic about how you produce an X25519 keypair. Three common paths:
+```ts
+import { commit, verifyOpening, buildCommitTx, buildOpenTx } from "@whisper-protocol/sdk";
 
-- **Wallet-signature derivation (recommended for end-user dApps).** The user's wallet signs a fixed canonical message; HKDF-SHA256 over the signature bytes produces a stable X25519 seed. Use [`@whisper-protocol/wallet-derived-keys`](https://www.npmjs.com/package/@whisper-protocol/wallet-derived-keys).
-- **From an Ed25519 seed (scripted demos / integration tests).** Derive X25519 from the Ed25519 seed via SHA-512 + Curve25519 clamping.
-- **Random ephemeral keys (one-shot conversations).** Generate fresh keys per session and discard.
+// Vector Pedersen commitment (encoding id bound at G_0).
+const { commitmentX, commitmentY, opening } = commit({
+  encodingId: cryptoWasm.text_utf8_v1_id(),
+  stream: cryptoWasm.text_utf8_v1_encode(new TextEncoder().encode("secret")),
+  blinding: freshBlinding(),
+});
+// `opening` (stream + blinding) is what you keep to open later.
+await wallet.signAndExecuteTransaction({
+  transaction: buildCommitTx({ packageId, encodingId, commitmentX, commitmentY }),
+});
+```
 
-Whichever path you pick, register the public key on the on-chain `KeyRegistry` so other senders can address you. Use `whisper.buildRegisterKeyTx(publicKey)` and have your wallet sign it.
+## On-chain proof of partial opening
+
+```ts
+import { proveCommitmentOpening, buildOpenWithProofTx } from "@whisper-protocol/sdk";
+
+// Generate a Groth16 proof (via the prover-server) that you know an
+// opening whose stream[0] equals the claimed value — without revealing
+// the rest. Then post it for on-chain verification.
+const proofBytes = await proveCommitmentOpening({
+  commitmentX, commitmentY, opening,
+  claimedFirstValue: opening.stream[0],
+  proverUrl: "http://127.0.0.1:3001",
+});
+await wallet.signAndExecuteTransaction({
+  transaction: buildOpenWithProofTx({
+    packageId, commitmentObjectId, claimedFirstValue: opening.stream[0], proofBytes,
+  }),
+});
+```
 
 ## API surface
 
-### Convenience facade
-
-```ts
-new WhisperClient({ suiClient, packageId, registryId, protocolVersion? })
-```
-
-| Method | Returns | Notes |
-|---|---|---|
-| `assertProtocolCompatible()` | `Promise<number>` | Reads on-chain `protocol_version()`, throws on mismatch. Memoised. |
-| `prepareSend({ senderAddress, recipientAddress, plaintext, schema?, context? })` | `Promise<PreparedSend>` | Looks up recipient, encrypts, builds unsigned tx. |
-| `decryptEnvelope({ envelope, recipientAddress, recipientPrivateKey })` | `Uint8Array \| null` | Returns null on any failure. |
-| `decryptEnvelopeUtf8(...)` | `string \| null` | Same, decodes as UTF-8. |
-| `fetchRegistry()` | `Promise<RegistryEntry[]>` | All registered keys. |
-| `fetchRegistryEntry(account)` | `Promise<RegistryEntry \| null>` | One account's entry. |
-| `fetchInbox(ownerAddress)` | `Promise<OnChainEnvelope[]>` | Owned envelopes for an address. |
-| `fetchEnvelope(envelopeId)` | `Promise<OnChainEnvelope \| null>` | Single envelope by id. |
-| `buildRegisterKeyTx(publicKey, scheme?)` | `Transaction` | Unsigned. |
-
-### Pure primitives (no client needed)
-
-```ts
-import {
-  encryptForRecipient, tryDecrypt, tryDecryptUtf8,
-  buildPostEnvelopeTx, buildRegisterKeyTx,
-  fetchRegistryEntries, fetchRegistryEntry,
-  fetchInbox, fetchEnvelope,
-  readOnChainProtocolVersion,
-  normalizeAddress, shortAddress,
-} from "@whisper-protocol/sdk";
-```
+- **Envelopes** — `seal`, `open`, `WhisperClient.prepareSend`,
+  `WhisperClient.decryptEnvelope`, `fetchEnvelope`, `buildPostEnvelopeTx`
+- **Commitments** — `commit`, `verifyOpening`, `fetchCommitment`,
+  `buildCommitTx`, `buildOpenTx`
+- **Proofs** — `proveCommitmentOpening`, `buildOpenWithProofTx`,
+  `DEFAULT_PROVER_URL`
+- **Keys** — `deriveFromSignature`, `deriveFromWalletSigner`,
+  `canonicalMessage`, `buildRegisterKeyTx`, `fetchRegistryEntries`,
+  `fetchRegistryEntry`
+- **Protocol** — `assertWriteCompatible`, `readOnChainProtocolVersion`,
+  `SDK_PROTOCOL_VERSION`
+- **WASM** — `cryptoWasm` (the full BJJ + Poseidon + encoding surface)
 
 ### Sub-exports
 
-- `@whisper-protocol/sdk` — main entry: client, primitives, address utils
-- `@whisper-protocol/sdk/networks` — `LOCALNET` / `TESTNET` / `MAINNET` deployment constants
-- `@whisper-protocol/sdk/feed` — `fetchFeed`, gas enrichment helpers (UI-oriented; optional)
+- `@whisper-protocol/sdk` — main entry
+- `@whisper-protocol/sdk/networks` — `LOCALNET` / `DEVNET` / `TESTNET` / `MAINNET` deployment constants
+- `@whisper-protocol/sdk/feed` — `fetchFeed`, gas helpers (UI-oriented)
 
 ## Versioning
 
-The SDK ships an `SDK_PROTOCOL_VERSION` constant. The deployed Move module exposes a matching `protocol_version()` view function. Call `WhisperClient.assertProtocolCompatible()` at startup to verify the SDK and the deployed package agree on wire format — bumping either side without the other will throw.
-
-| SDK | Contract `protocol_version` | Notes              |
-| --- | --------------------------- | ------------------ |
-| 0.1.x | 1 | Initial release.   |
-
-## Threat model summary
-
-Whisper provides:
-
-- Payload confidentiality against public chain observers, indexers, and other users.
-- Sender-authenticated delivery via Sui transaction signing.
-- Recipient-only decryption.
-
-Whisper does **not** provide:
-
-- Forward secrecy (a wallet compromise reveals every past encryption key).
-- Recipient anonymity (recipient address is public on the envelope).
-- Deniability (the keypair is wallet-attributable).
-- Metadata privacy (sender, recipient, schema, key version, sizes, and timestamps are all public).
-
-See the [writeup](https://thoughtfolio.xyz/Decentralized+Pairwise+Secret+Communication+Protocol+over+SUI+Blockchain) and the [protocol specs](https://github.com/0xErgod/whisper-protocol/tree/main/specs) for the full accounting.
-
-## Repository
-
-Source, issues, and protocol specs: <https://github.com/0xErgod/whisper-protocol>
+The SDK ships `SDK_PROTOCOL_VERSION`; the deployed Move package exposes a
+matching `protocol_version()`. Call `WhisperClient.assertWriteCompatible()`
+at startup to refuse writing against a mismatched deployment.
 
 ## License
 

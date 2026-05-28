@@ -28,7 +28,7 @@ Where seeds come from in practice:
 |---|---|
 | Native tests | fixed bytes or `ark_std::test_rng()` |
 | Headless-browser fixture | fixed bytes (this spec's worked example) |
-| Production (wallet-bound) | `Blake2b-512(wallet_signature_over("babyjub-keypair-v1"))` — pinned in a separate spec when `wallet-derived-keys` extends to Baby Jubjub |
+| Production (wallet-bound) | `Blake2b-512(wallet_signature_over("babyjub-keypair-v1"))` |
 
 ## Why 64 bytes (and not 32)
 
@@ -63,7 +63,7 @@ Where:
   is constant, the chunks come from a uniform seed).
 - **`Poseidon-BN254-circomlib`** is the Poseidon permutation over
   `F_p` with circomlib's parameters (arity 3, state size 4). Same
-  parameter set as [`specs/poseidon-commitment-format.md`](./poseidon-commitment-format.md);
+  parameter set as [`specs/protocol-commitment.md`](./protocol-commitment.md);
   same parameter set as the TypeScript `poseidon-lite` and circomlib's
   `poseidon([_, _, _])`. The Rust implementation uses
   [`light-poseidon`](https://crates.io/crates/light-poseidon), audited by
@@ -135,7 +135,7 @@ A conformant implementation MUST also satisfy:
 ## Scope intentionally NOT in this version
 
 - **Secret-key wire format.** No on-wire `SecretKey` encoding. The
-  production caller (`wallet-derived-keys` for Baby Jubjub, when written)
+  production caller (the SDK 's wallet-keys module)
   re-derives rather than stores. Adding `SecretKey` byte serialization
   later is non-breaking.
 - **`Zeroize` on drop.** Tracked as a follow-up brick. The production
@@ -145,7 +145,7 @@ A conformant implementation MUST also satisfy:
 ## References
 
 - [`babyjub-curve.md`](./babyjub-curve.md) — the curve this keypair lives on.
-- [`poseidon-commitment-format.md`](./poseidon-commitment-format.md) —
+- [`protocol-commitment.md`](./protocol-commitment.md) —
   same Poseidon parameter set, same `bytes_to_field_be(Blake2b256(domain))`
   domain-tag construction.
 - [RFC 9380](https://datatracker.ietf.org/doc/rfc9380/) — hash-to-field

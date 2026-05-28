@@ -120,7 +120,7 @@ pub fn validate_point(x: &str, y: &str) -> Result<Point, JsError> {
 ///
 /// Only the **public** half crosses the boundary as `pk_x` / `pk_y` decimal
 /// strings. The secret scalar `sk` is **deliberately not exposed**: the
-/// production path is `wallet-derived-keys` re-deriving from a wallet
+/// production path is the SDK 's wallet-keys module re-deriving from a wallet
 /// signature when needed, never storing or transporting `sk` across the
 /// boundary. Test code that wants to confirm the derivation matches the
 /// spec checks `(pk_x, pk_y)` instead, which is mathematically equivalent —

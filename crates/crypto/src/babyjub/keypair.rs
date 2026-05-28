@@ -39,7 +39,7 @@
 //!
 //! - **`SecretKey: Zeroize`**: the `SecretKey` type does not yet zero its
 //!   memory on drop. That's a real concern once we have a key path through
-//!   user wallets, but the production caller (`wallet-derived-keys`) does
+//!   user wallets, but the production caller (the SDK 's wallet-keys module) does
 //!   not store secrets — it re-derives them — so it is not urgent today
 //!   and will land as a focused brick. Test vectors keep their bytes by
 //!   design.

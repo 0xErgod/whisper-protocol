@@ -1,150 +1,162 @@
 # Whisper Protocol
 
-Sui-based private messaging where the ciphertext, sender, recipient, schema, and key version are public on chain but the plaintext is only legible to the addressed recipient.
+Sui-based private messaging built on a ZK-friendly cryptographic stack:
+BabyJubjub + Poseidon for envelopes and commitments, Groth16-on-BN254
+for on-chain proofs. The chain stores the ciphertext, sender, recipient,
+and encoding id publicly, but only the addressed recipient can read the
+plaintext — and a commitment's opening can be *proven* on chain without
+ever revealing it.
 
-This monorepo houses the Move package, the TypeScript SDK, the wallet-derivation helper, and a demo dApp.
+This monorepo houses the Move package, the Rust cryptography + circuit +
+prover crates, the WASM bindings the SDK consumes, the TypeScript SDK,
+and a set of demo apps.
 
-## Read more
+## Why this stack
 
-The design rationale, threat model, and motivation are written up at:
+Every primitive lives in BN254's field world so that **decrypting an
+envelope or opening a commitment inside a Groth16 circuit is tractable**:
 
-> **[Decentralized Pairwise Secret Communication Protocol over SUI Blockchain](https://thoughtfolio.xyz/Decentralized+Pairwise+Secret+Communication+Protocol+over+SUI+Blockchain)**
+- **BabyJubjub** — a twisted Edwards curve whose base field is BN254's
+  scalar field. ECDH, key derivation, and signatures are native field
+  arithmetic in a BN254 circuit (~thousands of constraints, not millions).
+- **Poseidon** (circomlib parameters) — the hash for the KDF, the stream
+  cipher, the MAC, and the commitment, at ~250 constraints per call.
+- **Vector Pedersen commitments** over BabyJubjub, with the payload's
+  encoding id bound at generator slot `G_0`.
+- **Groth16 on BN254** — the proving system, because Sui ships a native
+  on-chain verifier for it.
 
-Start there if you want the *why* before the *how*. The rest of this README is the *how* — how to use it, how to run it locally, how releases work.
-
-## Try it
-
-Live demo on Sui **testnet**: **<https://0xergod.github.io/whisper-protocol/>** *(canonical deployment from this repo's `main`)*
-
-You will need a Sui wallet (Slush, Suiet, etc.) set to **Testnet**. The demo derives an X25519 encryption keypair from one personal-message signature, registers your public key on chain, and lets you send encrypted secrets to any other registered address. Nothing leaves your browser unencrypted; the chain only ever sees ciphertext.
-
-> **Trust the URL above.** Anyone can fork this repo and publish a copy to their own `*.github.io` subdomain. Only the URL above is built from `main` of `0xErgod/whisper-protocol` via the `deploy-web` workflow.
-
-## npm packages
-
-- [`@whisper-protocol/sdk`](https://www.npmjs.com/package/@whisper-protocol/sdk) — encrypt, decrypt, build txs
-- [`@whisper-protocol/wallet-derived-keys`](https://www.npmjs.com/package/@whisper-protocol/wallet-derived-keys) — derive an X25519 encryption keypair from a Sui wallet signature
+The cryptography is implemented once in Rust (`crates/crypto`), compiled
+to WASM for the browser/SDK (`crates/crypto-wasm`), and mirrored as
+circuit gadgets (`crates/gadgets`, `crates/circuits`). Cross-language
+fixtures pin TS↔Rust↔circuit agreement byte-for-byte.
 
 ## Layout
 
 ```
-contracts/                              # Move package — published to localnet/testnet/mainnet
+contracts/                  # Move package (whisper_protocol): registry, envelopes, commitments, proofs
+crates/
+  crypto/                   # native BabyJubjub + Poseidon + Pedersen primitives
+  crypto-wasm/              # wasm-bindgen bindings the SDK consumes
+  encodings/                # payload encodings (text-utf8-v1, …)
+  gadgets/                  # circuit gadgets mirroring the native primitives
+  circuits/                 # Groth16 circuits (pedersen_opens_to, envelope_open_at_0)
+  prover/                   # trusted setup, prove, verify
+  prover-server/            # Axum HTTP server wrapping the prover
+  prover-wasm/              # (deferred) in-browser proving
+  protocol/                 # envelope + commitment composition over the primitives
 packages/
-  sdk/                                  # @whisper-protocol/sdk — encrypt, decrypt, build txs
-  wallet-derived-keys/                  # @whisper-protocol/wallet-derived-keys — wallet-signature key derivation
-web/                                    # demo dApp consuming the SDK + @mysten/dapp-kit
-networks.json                           # canonical deployment IDs per network (auto-updated by CI)
-specs/                                  # protocol design docs
-```
-
-The SDK and the contract version independently. The contract exposes `protocol_version()` and the SDK ships a matching `SDK_PROTOCOL_VERSION` constant; bumping either side requires a coordinated release.
-
-## Quickstart (local)
-
-```powershell
-# Start a local Sui node
-sui start --force-regenesis --with-faucet --fullnode-rpc-port 9000
-
-# Generate demo keys (creates .env)
-cargo run -q -- generate-env
-
-# Import + fund the demo addresses
-.\scripts\import-env-keys.ps1
-.\scripts\fund-demo-keys.ps1
-
-# Build everything
-pnpm install
-pnpm build
-
-# Publish the contract (overwrite any stale Published.toml first)
-sui client publish contracts --gas-budget 200000000 --json
-# Copy packageId + KeyRegistry objectId into web env or networks.json
-
-# Run the dApp
-pnpm dev:web
+  sdk/                      # @whisper-protocol/sdk — wire codecs, PTB builders, proof client
+apps/
+  protocol/                 # the demo dApp
+  curve/                    # BabyJubjub curve visualization
+  zk/                       # circuit prove/verify playground
+networks.json               # canonical deployment IDs per network
+specs/                      # protocol design docs (pinned constructions + worked-example fixtures)
 ```
 
 ## How it works
 
-1. **Connect a Sui wallet.** No demo seed phrase needed — the dApp uses [`@mysten/dapp-kit`](https://www.npmjs.com/package/@mysten/dapp-kit).
-2. **Sign a canonical message once per device.** The wallet's signature over a fixed, domain-separated message is run through HKDF-SHA256 to produce an X25519 encryption keypair. The signature itself never leaves the browser. See [specs/wallet-signature-derived-keys.md](specs/wallet-signature-derived-keys.md).
-3. **Register your encryption public key on the shared `KeyRegistry`.** Other senders look you up here to encrypt to your current `key_version`.
-4. **Send / receive envelopes.** Senders read your key from the registry, encrypt with X25519 + ChaCha20-Poly1305, and post the envelope on chain via `post_envelope`. The contract asserts the declared `key_version` matches your current registration; senders racing a rotation get told to retry.
+1. **Derive a BabyJubjub keypair.** The wallet signs one fixed canonical
+   message; the signature seeds `keypair_from_seed`. The signature never
+   leaves the browser. Cached in IndexedDB so you sign once per device.
+2. **Register your BJJ public key** on the shared `KeyRegistry`. Senders
+   look you up to encrypt to your current `key_version`.
+3. **Send / receive envelopes.** A sender seals a payload with BabyJubjub
+   ECDH → Poseidon KDF → Poseidon stream cipher → Poseidon MAC (the
+   encoding id is folded into the MAC, so it's public but authenticated),
+   and posts it via `post_envelope`. The recipient reconstructs the shared
+   point and opens it locally.
+4. **Commit + open.** Post a vector Pedersen commitment to a payload via
+   `commit_secret`; later either fully reveal it (`open_secret`) or
+   **prove a partial opening** (`open_with_proof`) — a Groth16 proof that
+   you know an opening whose `stream[0]` equals a claimed value, verified
+   on chain by Sui's native Groth16 verifier, without revealing the rest.
+
+## Dev environment
+
+The shared dev devnet is `http://sui-devnet:9000`. It is the default
+target of the demo dApp and the SDK.
+
+```powershell
+# Build the WASM bindings + SDK + apps
+pnpm install
+pnpm build
+
+# Publish the Move package to the dev devnet (runs the VK drift guard,
+# writes the package + registry ids into networks.json, regenerates
+# the SDK's networks.ts). Requires a funded address on the devnet.
+./scripts/deploy-devnet.ps1
+
+# Run the demo dApp (defaults to the devnet via networks.json)
+pnpm dev:protocol
+```
+
+To exercise the on-chain proof flow, also run the prover-server:
+
+```powershell
+# First boot runs Groth16 trusted setup (deterministic seed) and writes keys/
+cargo run --release --bin prover-server
+```
+
+Tests:
+
+```powershell
+sui move test --path contracts     # Move
+cargo test --workspace             # Rust (crypto, circuits, prover, …)
+pnpm test                          # TypeScript (SDK)
+```
 
 ## Threat model
 
 Whisper provides:
 
-- Payload confidentiality against public chain observers, indexers, and other users.
+- Payload confidentiality against public chain observers, indexers, and
+  other users.
 - Sender-authenticated delivery via Sui transaction signing.
 - Recipient-only decryption.
+- Provable partial openings: a third party can be convinced a committer
+  knows an opening to a claimed value, without seeing the opening.
 
 Whisper does **not** provide:
 
-- Forward secrecy. A wallet compromise reveals every encryption key derivable under any version → every past message is decryptable.
-- Recipient anonymity. Recipient address is public on the envelope.
-- Deniability. The keypair is wallet-attributable.
-- Metadata privacy. Sender, recipient, schema, key version, sizes, and timestamps are all public.
+- Forward secrecy. A wallet compromise reveals every derivable key.
+- Recipient anonymity. The recipient address is public on the envelope.
+- Metadata privacy. Sender, recipient, encoding id, sizes, and timestamps
+  are public.
 
-See [specs/](specs/) for full design notes and trade-offs.
+See [specs/](specs/) for the pinned constructions, worked-example
+fixtures, and the ZK proving-stack rationale ([specs/zk/stack.md](specs/zk/stack.md)).
 
 ## CI/CD
 
-- **`ci.yml`** — typecheck + build on every push and PR (TypeScript packages, Rust CLI, Move package).
-- **`release.yml`** — runs `semantic-release` on every push to `main`. Each package decides independently whether to cut a release based on the **scope** of the commits since its last tag.
-- **`deploy-web.yml`** — on every push to `main`, builds the demo dApp and deploys it to GitHub Pages at <https://0xergod.github.io/whisper-protocol/>.
-- **`deploy-contract.yml`** — manually triggered (`workflow_dispatch`); publishes the Move package to testnet (or mainnet with explicit confirmation), captures the new IDs, opens a PR updating `networks.json`.
+- **`ci.yml`** — typecheck + build (TypeScript, Rust, Move) on every push
+  and PR. Builds the WASM bindings before the TS jobs so the workspace
+  `link:` to `crates/crypto-wasm/pkg` resolves.
+- **`release.yml`** — runs `semantic-release` for `@whisper-protocol/sdk`
+  on every push to `main`, gated by conventional-commit scope.
+- **`deploy-protocol-demo.yml`** — builds + deploys the demo dApp to
+  GitHub Pages on every push to `main`.
+- **`deploy-contract.yml`** — manual (`workflow_dispatch`); publishes the
+  Move package to a hosted network and opens a PR updating `networks.json`.
 
 ## Releasing
 
-The two npm packages release independently and automatically. There is no manual `npm version` / `git tag` / `git push --tags` step. **The version number, npm publish, and GitHub release are all driven by the conventional-commit history.**
+`@whisper-protocol/sdk` releases automatically via `semantic-release`,
+driven by conventional-commit scope:
 
-To trigger a release, write commits with the right scope and merge them to `main`:
+| Commit                                 | Effect                              |
+| -------------------------------------- | ----------------------------------- |
+| `feat(sdk): add new helper`            | minor release                       |
+| `fix(sdk): correct a bug`              | patch release                       |
+| `feat(sdk)!: rename an API`            | **major** release                   |
+| `feat(protocol): dApp tweak`           | no release (the dApp isn't published)|
+| `chore: …` / `ci: …` / `test: …`       | no release                          |
 
-| Commit                                  | Effect                                          |
-| --------------------------------------- | ----------------------------------------------- |
-| `feat(sdk): add new helper`             | `@whisper-protocol/sdk` minor release           |
-| `fix(sdk): correct decoding bug`        | `@whisper-protocol/sdk` patch release           |
-| `feat(sdk)!: rename WhisperClient API`  | `@whisper-protocol/sdk` **major** release       |
-| `feat(wallet-derived-keys): …`          | `@whisper-protocol/wallet-derived-keys` release |
-| `feat: top-level repo change`           | no release (unscoped — see "Tail risk" below)   |
-| `feat(web): dApp UI tweak`              | no release (web is not published)               |
-| `chore: …` / `ci: …` / `test: …`        | no release                                      |
-
-When the workflow finds commits that warrant a release for a given package, it:
-
-1. Computes the next version from the commit history (semver).
-2. Bumps the version in the published npm tarball's `package.json`. (The on-disk `package.json` on `main` stays at `0.0.0-development` — the canonical version lives in npm + the git tag, not in the working tree.)
-3. Publishes to npm with provenance (via OIDC, no manual signing).
-4. Creates a git tag `sdk-vX.Y.Z` (or `wallet-derived-vX.Y.Z`) and a GitHub release at that tag with the auto-generated release notes.
-
-**Why not commit the version bump back to `main`?** The `@semantic-release/git` plugin would do that, but it requires bypassing branch protection — the workflow's push of the `chore: release` commit fails the "PR required" / "CI checks required" rules on `main`. We chose to keep branch protection strict and let the canonical version live in tags + on npm instead. This is the standard semantic-release setup for repos with branch protection.
-
-**Trade-off you accepted by choosing semantic-release**: there is no review gate on the release itself. A `feat(sdk):` commit merged to `main` will publish to npm within ~3 minutes. The protection is at *merge time* — branch protection requires PRs and green CI before merging, and treat scoped commits as deliberate release intents. To stage a release without publishing, push to a `next` / `alpha` / `beta` branch — semantic-release ships those as pre-releases (`0.2.0-beta.1`).
-
-**Tail risk on unscoped commits.** An unscoped `feat:` or `fix:` (no `(scope)`) falls through to conventionalcommits' default rules and would trigger a release. Every commit in this repo's history is scoped, so the risk is hypothetical — but worth knowing.
-
-### Authentication (OIDC trusted publishing)
-
-The release workflow uses npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/) flow — no long-lived `NPM_TOKEN` secret. GitHub Actions issues a short-lived OIDC JWT proving `(0xErgod/whisper-protocol, release.yml)`, npm validates it against a per-package trusted-publisher record, and exchanges it for a credential that lasts a few minutes. Provenance signing happens from the same id-token, so every npm release is automatically Sigstore-signed and shows a green badge on npmjs.com.
-
-What this setup requires:
-
-- **`id-token: write`** permission on the workflow job (already set in `release.yml`).
-- **A trusted-publisher record on each package** (`@whisper-protocol/sdk` and `@whisper-protocol/wallet-derived-keys`) at npmjs.com → package settings → "Publishing access" → add GitHub Actions trusted publisher with:
-  - Organization: `0xErgod`
-  - Repository: `whisper-protocol`
-  - Workflow filename: `release.yml`
-  - Environment name: *(leave blank)*
-
-If you ever rename `release.yml` or move the release logic into a reusable workflow, update the npm-side records first or the next publish will 401. For an extra protection layer, add a GitHub `production` environment with required reviewers and pin it on both the workflow job (`environment: production`) and the trusted-publisher record — every release then requires manual approval before npm accepts it.
-
-## Specs
-
-- [secret-sharing-poc-build.md](specs/secret-sharing-poc-build.md) — as-built Move contract and demo flow.
-- [wallet-bound-private-messaging.md](specs/wallet-bound-private-messaging.md) — broader protocol design with future multi-recipient envelopes.
-- [wallet-signature-derived-keys.md](specs/wallet-signature-derived-keys.md) — the wallet-signature derivation scheme used by `@whisper-protocol/wallet-derived-keys`.
-- [provable-shared-secrets-extensions.md](specs/provable-shared-secrets-extensions.md) — forward-looking commitments / openings / ZK roadmap.
+Publishing uses npm's OIDC trusted-publishing flow (no `NPM_TOKEN`); the
+GitHub Actions id-token is exchanged at npm for a short-lived credential,
+and provenance is signed from the same token. Renaming `release.yml`
+requires updating the npm-side trusted-publisher record first.
 
 ## License
 
