@@ -9,15 +9,15 @@
       "deployedAtMs": null,
       "deployer": null,
       "txDigest": null,
-      "note": "Localnet IDs are intentionally null — every developer regenerates them via `sui start --force-regenesis` + republish. Pass explicit IDs to WhisperClient or set VITE_PACKAGE_ID / VITE_REGISTRY_ID for the demo dApp."
+      "note": "Localnet IDs are intentionally null \u2014 every developer regenerates them via `sui start --force-regenesis` + republish. Pass explicit IDs to WhisperClient or set VITE_PACKAGE_ID / VITE_REGISTRY_ID for the demo dApp."
     },
     "devnet": {
       "rpcUrl": "http://sui-devnet:9000",
-      "packageId": null,
-      "registryId": null,
-      "deployedAtMs": null,
-      "deployer": null,
-      "txDigest": null,
+      "packageId": "0x130805b437bda6999a9079f7fa50044d4a4b7d1c9adfb5e940af5c52d9ad93ef",
+      "registryId": "0xa529b66986d5637e21e6ea1e3e32b57473c7ec312157b48bce27e0e98ae61ce5",
+      "deployedAtMs": 1779973889722,
+      "deployer": "0xf4a988f613a08c5d4e8d56463ac1dba22bc12509a3a32031c549a2274b00ae73",
+      "txDigest": "GC8No9bEsEYDfYXxSyR9Ks1h74wh9eHEe54LKZR5RgGY",
       "note": "Shared dev devnet at host `sui-devnet:9000`. IDs are populated per deploy by scripts/deploy-devnet.ps1 (writes networks.json then runs gen:networks). The default target of the demo dApp and SDK tests; override per-developer via VITE_SUI_RPC_URL / VITE_PACKAGE_ID / VITE_REGISTRY_ID."
     },
     "testnet": {

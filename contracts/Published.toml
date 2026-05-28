@@ -13,12 +13,12 @@ upgrade-capability = "0x71979e114dadae54b0b791b7509426a3a0c3a1d577115ccb836842d4
 
 [published.tailscale-devnet]
 chain-id = "433fa820"
-published-at = "0xbaddb3243712c0c0ef282e321598511c1fc1dcc7ab507475284f18ed4144a32f"
-original-id = "0xbaddb3243712c0c0ef282e321598511c1fc1dcc7ab507475284f18ed4144a32f"
+published-at = "0x130805b437bda6999a9079f7fa50044d4a4b7d1c9adfb5e940af5c52d9ad93ef"
+original-id = "0x130805b437bda6999a9079f7fa50044d4a4b7d1c9adfb5e940af5c52d9ad93ef"
 version = 1
 toolchain-version = "1.66.1"
 build-config = { flavor = "sui", edition = "2024" }
-upgrade-capability = "0x5704bd93ad1d35c1acaefc682b83325e2a50a0942ec69bb7eedf8bc46e2298af"
+upgrade-capability = "0xeb8dc1719fd63358403eb58d22a153794d8bdc206256dcaad5bb8fbd518357d8"
 
 [published.testnet]
 chain-id = "4c78adac"
