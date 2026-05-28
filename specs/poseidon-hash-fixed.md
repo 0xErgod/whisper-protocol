@@ -56,7 +56,7 @@ domain_tag = bytes_to_field_be(Blake2b-256(domain_string))
 
 — the same construction other protocol specs use
 ([`babyjub-keypair.md`](./babyjub-keypair.md),
-[`poseidon-commitment-format.md`](./poseidon-commitment-format.md)).
+[`protocol-commitment.md`](./protocol-commitment.md)).
 A consumer's spec MUST pin its specific `domain_string`. The hash
 function itself takes the already-derived `Fq` element; it does not
 hash strings.
@@ -161,7 +161,7 @@ A conformant implementation MUST:
 - [`poseidon-hash-sponge-v1.md`](./poseidon-hash-sponge.md) — the
   variable-length sibling, used when the input length is unknown or
   exceeds 11.
-- [`poseidon-commitment-format.md`](./poseidon-commitment-format.md) —
+- [`protocol-commitment.md`](./protocol-commitment.md) —
   the original protocol use of Poseidon, with the same circomlib
   parameters and the same `bytes_to_field_be(Blake2b256(domain))`
   domain-tag construction.

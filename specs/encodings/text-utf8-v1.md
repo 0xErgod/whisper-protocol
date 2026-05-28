@@ -263,5 +263,5 @@ A conformant implementation MUST:
   byte/typed split this encoding sits inside.
 - [`babyjub-curve.md`](../babyjub-curve.md) — the field `Fq` this
   encoding outputs into.
-- [`poseidon-commitment-format.md`](../poseidon-commitment-format.md) —
+- [`protocol-commitment.md`](../protocol-commitment.md) —
   same 31-byte-big-endian chunking convention.
