@@ -44,6 +44,16 @@ export type {
 } from "./tx.js";
 
 export {
+  proveCommitmentOpening,
+  buildOpenWithProofTx,
+  DEFAULT_PROVER_URL,
+} from "./proofs.js";
+export type {
+  ProveCommitmentOpeningArgs,
+  BuildOpenWithProofTxArgs,
+} from "./proofs.js";
+
+export {
   fetchRegistryEntries,
   fetchRegistryEntry,
   fetchEncryptionKeyRecord,

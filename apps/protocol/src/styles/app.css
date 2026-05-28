@@ -984,3 +984,9 @@
   color: var(--text-faint);
   margin: 0 0.5ch;
 }
+
+.commit-actions {
+  display: flex;
+  gap: 1ch;
+  flex-wrap: wrap;
+}
