@@ -1,31 +1,46 @@
+// Public SDK surface. Re-exports the operations a dApp composes —
+// nothing more, nothing less.
+
 export { WhisperClient } from "./client.js";
 export type {
   WhisperClientConfig,
-  PrepareSendV5Args,
-  PreparedSendV5,
-  RecipientKeyResolution,
+  PrepareSendArgs,
+  PreparedSend,
 } from "./client.js";
 
-export {
-  encryptForRecipientsV5,
-  tryDecryptV5,
-  tryDecryptV5Utf8,
-} from "./encrypt-unified.js";
-export type {
-  UnifiedEncryptInput,
-  UnifiedEncryptedPayload,
-  UnifiedDecryptInput,
-  UnifiedEncryptRecipient,
-  UnifiedEncryptionSuite,
-} from "./encrypt-unified.js";
+export { seal, open, WhisperOpenError } from "./suite.js";
+export type { Envelope, Payload, OpenError } from "./suite.js";
 
 export {
-  buildPostV5EnvelopeTx,
+  fetchEnvelope,
+  decodeEnvelopeFields,
+  envelopeFromOnChain,
+} from "./envelope.js";
+export type { OnChainEnvelope } from "./envelope.js";
+
+export {
+  commit,
+  verifyOpening,
+  fetchCommitment,
+  decodeCommitmentFields,
+} from "./commitments.js";
+export type {
+  OnChainCommitment,
+  Opening,
+  CommitmentResult,
+} from "./commitments.js";
+
+export {
   buildRegisterKeyTx,
+  buildPostEnvelopeTx,
+  buildCommitTx,
+  buildOpenTx,
 } from "./tx.js";
 export type {
-  BuildPostV5EnvelopeArgs,
   BuildRegisterKeyArgs,
+  BuildPostEnvelopeArgs,
+  BuildCommitTxArgs,
+  BuildOpenTxArgs,
 } from "./tx.js";
 
 export {
@@ -36,58 +51,24 @@ export {
 export type { RegistryEntry, EncryptionKeyRecord } from "./registry.js";
 
 export {
-  fetchV5Envelope,
-  fetchV5Inbox,
-  decodeV5EnvelopeFieldsTyped,
-  recipientIndexInV5Envelope,
-  canReadV5Envelope,
-  assertCanReadV5Envelope,
-} from "./envelope-unified.js";
-export type { OnChainV5Envelope } from "./envelope-unified.js";
-
-// Historical envelope decoders for v1/v2 (single-recipient owned)
-// envelopes from prior deployments. The SDK no longer produces
-// envelopes under this shape; this is read-only legacy support.
-export {
-  fetchEnvelope as fetchLegacyV2Envelope,
-  decodeEnvelopeFields as decodeLegacyV2EnvelopeFields,
-} from "./envelope.js";
-export type { OnChainEnvelope as OnChainLegacyV2Envelope } from "./envelope.js";
-
-export {
-  encodeTextSecret,
-  commitmentHash,
-  createCommitment,
-  verifyOpening,
-  buildCommitTx,
-  buildOpenTx,
-  decodeCommitmentFields,
-  fetchCommitment,
-  encodeOpeningPlaintext,
-  decodeOpeningPlaintext,
-  prepareCommitWithSelfOpening,
-  loadOpeningForCommitment,
-} from "./commitments.js";
+  deriveFromSignature,
+  deriveFromWalletSigner,
+  canonicalMessage,
+  canonicalMessageBytes,
+  canonicalMessageDigest,
+  makeCacheKey,
+  loadCached,
+  saveCached,
+} from "./wallet-keys.js";
 export type {
-  OnChainCommitment,
-  Opening,
-  BuildCommitTxArgs,
-  BuildOpenTxArgs,
-  OpeningPayloadV1,
-  PrepareCommitWithSelfOpeningArgs,
-  PreparedCommitWithSelfOpening,
-} from "./commitments.js";
+  DerivedBabyJubKeypair,
+  CanonicalMessageInput,
+  CacheKeyInput,
+} from "./wallet-keys.js";
 
 export { readOnChainProtocolVersion, assertWriteCompatible } from "./protocol.js";
 
-export {
-  UnsupportedEnvelopeFormatVersionError,
-  UnsupportedEncryptionSchemeError,
-  UnsupportedHashSchemeError,
-  WriteCompatibilityError,
-} from "./errors.js";
-
-export { poseidonCommitmentHash, MAX_POSEIDON_SECRET_BYTES } from "./hash-poseidon.js";
+export { WriteCompatibilityError } from "./errors.js";
 
 export { normalizeAddress, shortAddress } from "./address.js";
 
@@ -97,22 +78,9 @@ export {
   MODULE_REGISTRY,
   MODULE_ENVELOPES,
   MODULE_COMMITMENTS,
+  MODULE_PROOFS,
   CLOCK_ID,
-  SCHEMA_TEXT_SECRET_V1,
-  SCHEMA_COMMITMENT_OPENING_V1,
-  LEGACY_ENVELOPE_FORMAT_VERSION,
-  ENVELOPE_FORMAT_VERSION_V2,
-  ENVELOPE_FORMAT_VERSION_V3,
-  CURRENT_ENVELOPE_FORMAT_VERSION,
-  CURRENT_COMMITMENT_FORMAT_VERSION,
-  MAX_RECIPIENTS,
-  ENCRYPTION_SCHEME,
-  ENCRYPTION_SCHEME_MULTI,
-  ENCRYPTION_SCHEME_UNIFIED,
-  HKDF_INFO,
-  HKDF_INFO_WRAP,
-  HASH_SCHEME_BLAKE2B_256,
-  HASH_SCHEME_POSEIDON_BN254_CIRCOMLIB_V1,
-  COMMITMENT_DOMAIN_V1,
   SDK_PROTOCOL_VERSION,
 } from "./constants.js";
+
+export { cryptoWasm } from "./wasm.js";

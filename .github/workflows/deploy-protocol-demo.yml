@@ -47,14 +47,33 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # The SDK depends on `crypto-wasm` via workspace link; the pkg/
+      # directory must exist on disk before `pnpm install` resolves
+      # the link. Build it via wasm-pack first.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: deploy-wasm
+          workspaces: ". -> target"
+      - name: install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: build crypto-wasm pkg
+        run: |
+          wasm-pack build crates/crypto-wasm --target bundler \
+            --out-dir pkg --out-name crypto_wasm --release
+
       - name: install
         run: pnpm install --frozen-lockfile
 
-      # The web app imports @whisper-protocol/sdk + @whisper-protocol/
-      # wallet-derived-keys via the workspace `link:` protocol, so they
-      # resolve to the package source dirs. TypeScript and Vite both
-      # need the packages' compiled `dist/` to exist before the web
-      # build can resolve their type declarations and entry points.
+      # The web app imports @whisper-protocol/sdk via the workspace
+      # `link:` protocol, so it resolves to the package source dir.
+      # TypeScript and Vite both need the SDK's compiled `dist/` to
+      # exist before the web build can resolve type declarations and
+      # entry points.
       - name: build sdk packages first
         run: pnpm -r --filter "./packages/*" run build
 

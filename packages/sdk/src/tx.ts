@@ -1,94 +1,123 @@
+// PTB builders for the four `whisper_protocol` entry points:
+//
+//   registry::register_encryption_key   (pubkey_x, pubkey_y, clock)
+//   envelopes::post_envelope            (single-recipient native-mirror shape)
+//   commitments::commit_secret          (encoding_id, x, y, clock)
+//   commitments::open_secret            (commitment, stream, blinding, clock)
+//
+// Field elements (BN254 base field) cross the JS↔chain boundary as
+// `BigInt` because Sui's `tx.pure.u256` takes `bigint` natively. The
+// SDK carries them as decimal strings internally (the crypto-wasm
+// wire form); this file is the place where they get parsed.
+
 import { Transaction } from "@mysten/sui/transactions";
 import {
   CLOCK_ID,
-  CURRENT_ENVELOPE_FORMAT_VERSION,
+  MODULE_COMMITMENTS,
   MODULE_ENVELOPES,
   MODULE_REGISTRY,
-  SCHEMA_TEXT_SECRET_V1,
-  ENCRYPTION_SCHEME,
 } from "./constants.js";
-import type { UnifiedEncryptedPayload } from "./suite-x25519-unified.js";
+import type { Envelope } from "./suite.js";
+import type { Opening } from "./commitments.js";
 
-export interface BuildPostV5EnvelopeArgs {
-  packageId: string;
-  registryId: string;
-  recipients: Array<{
-    address: string;
-    keyId: string;
-    keyVersion: number;
-  }>;
-  schema?: string;
-  context?: Uint8Array;
-  formatVersion?: number;
-  payload: UnifiedEncryptedPayload;
+function bi(s: string): bigint {
+  return BigInt(s);
 }
 
 export interface BuildRegisterKeyArgs {
   packageId: string;
   registryId: string;
-  encryptionPublicKey: Uint8Array;
-  encryptionScheme?: string;
+  pubkeyX: string;
+  pubkeyY: string;
 }
 
-/**
- * Build the move call for the unified v5 envelope.
- *
- * Same shape used for direct messages (recipients.length === 1) and
- * group messages (recipients.length > 1). The on-chain entry point
- * makes no distinction.
- */
-export function buildPostV5EnvelopeTx(args: BuildPostV5EnvelopeArgs): Transaction {
+export function buildRegisterKeyTx(args: BuildRegisterKeyArgs): Transaction {
   const tx = new Transaction();
-  const schemaBytes = new TextEncoder().encode(args.schema ?? SCHEMA_TEXT_SECRET_V1);
-  if (args.recipients.length === 0) {
-    throw new Error("buildPostV5EnvelopeTx requires at least one recipient");
-  }
-  if (args.payload.wrappedKeys.length !== args.recipients.length) {
-    throw new Error(
-      `wrappedKeys length (${args.payload.wrappedKeys.length}) must match recipients (${args.recipients.length})`,
-    );
-  }
-  if (args.payload.wrapNonces.length !== args.recipients.length) {
-    throw new Error(
-      `wrapNonces length (${args.payload.wrapNonces.length}) must match recipients (${args.recipients.length})`,
-    );
-  }
-  const recipientAddresses = args.recipients.map((r) => r.address);
-  const recipientKeyIds = args.recipients.map((r) => r.keyId);
-  const recipientKeyVersions = args.recipients.map((r) => BigInt(r.keyVersion));
-  const wrappedKeys = args.payload.wrappedKeys.map((w) => Array.from(w));
-  const wrapNonces = args.payload.wrapNonces.map((n) => Array.from(n));
   tx.moveCall({
-    target: `${args.packageId}::${MODULE_ENVELOPES}::post_envelope`,
+    target: `${args.packageId}::${MODULE_REGISTRY}::register_encryption_key`,
     arguments: [
       tx.object(args.registryId),
-      tx.pure.vector("address", recipientAddresses),
-      tx.pure.vector("id", recipientKeyIds),
-      tx.pure.vector("u64", recipientKeyVersions),
-      tx.pure.vector("u8", Array.from(args.context ?? new Uint8Array())),
-      tx.pure.vector("u8", Array.from(schemaBytes)),
-      tx.pure.u16(args.formatVersion ?? CURRENT_ENVELOPE_FORMAT_VERSION),
-      tx.pure.vector("u8", Array.from(new TextEncoder().encode(args.payload.encryptionScheme))),
-      tx.pure.vector("u8", Array.from(args.payload.ephPubkey)),
-      tx.pure.vector("u8", Array.from(args.payload.payloadNonce)),
-      tx.pure.vector("u8", Array.from(args.payload.ciphertext)),
-      tx.pure.vector("vector<u8>", wrappedKeys),
-      tx.pure.vector("vector<u8>", wrapNonces),
+      tx.pure.u256(bi(args.pubkeyX)),
+      tx.pure.u256(bi(args.pubkeyY)),
       tx.object(CLOCK_ID),
     ],
   });
   return tx;
 }
 
-export function buildRegisterKeyTx(args: BuildRegisterKeyArgs): Transaction {
+export interface BuildPostEnvelopeArgs {
+  packageId: string;
+  registryId: string;
+  /** The recipient's Sui address. */
+  recipient: string;
+  /** Recipient's current `EncryptionKey` object id (from their registry entry). */
+  recipientKeyId: string;
+  /** Recipient's current key version (from their registry entry). */
+  recipientKeyVersion: number;
+  /** Sealed envelope produced by `suite.seal`. */
+  envelope: Envelope;
+}
+
+export function buildPostEnvelopeTx(args: BuildPostEnvelopeArgs): Transaction {
   const tx = new Transaction();
-  const schemeBytes = new TextEncoder().encode(args.encryptionScheme ?? ENCRYPTION_SCHEME);
+  const ct = args.envelope.ciphertext.map(bi);
   tx.moveCall({
-    target: `${args.packageId}::${MODULE_REGISTRY}::register_encryption_key`,
+    target: `${args.packageId}::${MODULE_ENVELOPES}::post_envelope`,
     arguments: [
       tx.object(args.registryId),
-      tx.pure.vector("u8", Array.from(schemeBytes)),
-      tx.pure.vector("u8", Array.from(args.encryptionPublicKey)),
+      tx.pure.address(args.recipient),
+      tx.pure.id(args.recipientKeyId),
+      tx.pure.u64(BigInt(args.recipientKeyVersion)),
+      tx.pure.u256(bi(args.envelope.senderPkX)),
+      tx.pure.u256(bi(args.envelope.senderPkY)),
+      tx.pure.u256(bi(args.envelope.recipientPkX)),
+      tx.pure.u256(bi(args.envelope.recipientPkY)),
+      tx.pure.u256(bi(args.envelope.envelopeId)),
+      tx.pure.u256(bi(args.envelope.encodingId)),
+      tx.pure.vector("u256", ct),
+      tx.pure.u256(bi(args.envelope.macTag)),
+      tx.object(CLOCK_ID),
+    ],
+  });
+  return tx;
+}
+
+export interface BuildCommitTxArgs {
+  packageId: string;
+  encodingId: string;
+  commitmentX: string;
+  commitmentY: string;
+}
+
+export function buildCommitTx(args: BuildCommitTxArgs): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${args.packageId}::${MODULE_COMMITMENTS}::commit_secret`,
+    arguments: [
+      tx.pure.u256(bi(args.encodingId)),
+      tx.pure.u256(bi(args.commitmentX)),
+      tx.pure.u256(bi(args.commitmentY)),
+      tx.object(CLOCK_ID),
+    ],
+  });
+  return tx;
+}
+
+export interface BuildOpenTxArgs {
+  packageId: string;
+  commitmentObjectId: string;
+  opening: Opening;
+}
+
+export function buildOpenTx(args: BuildOpenTxArgs): Transaction {
+  const tx = new Transaction();
+  const stream = args.opening.stream.map(bi);
+  tx.moveCall({
+    target: `${args.packageId}::${MODULE_COMMITMENTS}::open_secret`,
+    arguments: [
+      tx.object(args.commitmentObjectId),
+      tx.pure.vector("u256", stream),
+      tx.pure.u256(bi(args.opening.blinding)),
       tx.object(CLOCK_ID),
     ],
   });

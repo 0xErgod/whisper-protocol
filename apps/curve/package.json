@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Baby Jubjub curve visualization — creative-coding intuition for the protocol's curve world.",
   "scripts": {
-    "wasm": "wasm-pack build ../../crates/crypto-wasm --target web --out-dir pkg --out-name crypto_wasm --release",
+    "wasm": "wasm-pack build ../../crates/crypto-wasm --target bundler --out-dir pkg --out-name crypto_wasm --release",
     "predev": "pnpm run wasm",
     "dev": "vite",
     "prebuild": "pnpm run wasm",

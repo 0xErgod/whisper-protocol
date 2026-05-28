@@ -555,6 +555,26 @@ pub fn poseidon_hash_sponge(
     Ok(h.into_bigint().to_string())
 }
 
+/// Compute a Poseidon domain tag as a base-field element.
+///
+/// `domain_string` is the UTF-8 protocol tag (e.g.
+/// `"envelope-cipher-key"`). The native implementation hashes the
+/// bytes via Blake2b-256 and reduces big-endian to `Fq`. This
+/// binding exposes the function so JS consumers building protocol
+/// messages can derive the same domain-tag values the Rust side
+/// uses — composing envelope encryption, MAC, and KDF without
+/// hardcoding magic decimal constants.
+///
+/// Returns the `Fq` element as a decimal string. Constant per
+/// `domain_string`; pinned in each primitive's spec (e.g.
+/// `specs/babyjub-kdf.md` for the envelope role tags).
+#[wasm_bindgen]
+pub fn domain_tag(domain_string: &str) -> String {
+    crypto::poseidon::domain_tag(domain_string)
+        .into_bigint()
+        .to_string()
+}
+
 /// Derive one field element of key material from a shared ECDH point
 /// and a context. See `specs/babyjub-kdf.md`.
 ///

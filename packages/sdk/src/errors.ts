@@ -1,36 +1,13 @@
-export class UnsupportedEnvelopeFormatVersionError extends Error {
-  readonly formatVersion: number;
+// Cross-cutting SDK errors. Per-module errors live in the modules
+// that throw them (e.g. `WhisperOpenError` in `suite.ts`).
 
-  constructor(formatVersion: number) {
-    super(`Unsupported Whisper envelope format_version=${formatVersion}.`);
-    this.name = "UnsupportedEnvelopeFormatVersionError";
-    this.formatVersion = formatVersion;
-  }
-}
-
-export class UnsupportedEncryptionSchemeError extends Error {
-  readonly encryptionScheme: string;
-
-  constructor(encryptionScheme: string) {
-    super(`Unsupported Whisper encryption scheme "${encryptionScheme}".`);
-    this.name = "UnsupportedEncryptionSchemeError";
-    this.encryptionScheme = encryptionScheme;
-  }
-}
-
+/**
+ * The deployed package's `protocol_version` doesn't match the version
+ * this SDK is willing to write to. Thrown by `assertWriteCompatible`.
+ */
 export class WriteCompatibilityError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "WriteCompatibilityError";
-  }
-}
-
-export class UnsupportedHashSchemeError extends Error {
-  readonly hashScheme: string;
-
-  constructor(hashScheme: string) {
-    super(`Unsupported Whisper commitment hash scheme "${hashScheme}".`);
-    this.name = "UnsupportedHashSchemeError";
-    this.hashScheme = hashScheme;
   }
 }

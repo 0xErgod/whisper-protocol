@@ -10,8 +10,7 @@
     "dev:protocol": "pnpm --filter protocol-demo run dev",
     "dev:curve": "pnpm --filter curve-viz run dev",
     "test": "pnpm -r run test",
-    "release:sdk": "pnpm --filter @whisper-protocol/sdk exec semantic-release",
-    "release:wallet-derived-keys": "pnpm --filter @whisper-protocol/wallet-derived-keys exec semantic-release"
+    "release:sdk": "pnpm --filter @whisper-protocol/sdk exec semantic-release"
   },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13.0.0",

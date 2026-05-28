@@ -27,25 +27,25 @@
     }
   },
   "scripts": {
+    "wasm": "wasm-pack build ../../crates/crypto-wasm --target bundler --out-dir pkg --out-name crypto_wasm --release",
     "gen:networks": "node scripts/generate-networks.mjs",
     "gen:networks:check": "node scripts/generate-networks.mjs --check",
-    "prebuild": "node scripts/generate-networks.mjs",
+    "prebuild": "pnpm run wasm && node scripts/generate-networks.mjs",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm run wasm",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rimraf dist"
   },
   "dependencies": {
     "@mysten/sui": "^1.38.0",
-    "@noble/ciphers": "^1.0.0",
-    "@noble/curves": "^1.6.0",
-    "@noble/hashes": "^1.5.0",
-    "poseidon-lite": "^0.3.0"
+    "crypto-wasm": "link:../../crates/crypto-wasm/pkg"
   },
   "devDependencies": {
     "rimraf": "^6.0.1",
     "typescript": "^5.6.3",
+    "vite-plugin-wasm": "^3.4.0",
     "vitest": "^2.1.0"
   },
   "publishConfig": {
@@ -60,10 +60,11 @@
   "keywords": [
     "sui",
     "whisper",
+    "babyjub",
+    "poseidon",
+    "zk",
     "encryption",
     "messaging",
-    "x25519",
-    "chacha20poly1305",
     "privacy"
   ]
 }

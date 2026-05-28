@@ -24,7 +24,11 @@
  * Rust tests pin.
  */
 
-import init from "crypto-wasm";
+// crypto-wasm is built with `--target bundler`; the bundler
+// instantiates the WASM at build time, so no explicit `init()`
+// call is required. The import is purely a side-effect to make
+// sure Vite picks the wasm chunk into the bundle.
+import "crypto-wasm";
 
 import { setupEcdhPanel } from "./ecdh-panel";
 import { setupEncodingPanel } from "./encoding-panel";
@@ -32,8 +36,6 @@ import { setupKeypairPanel } from "./keypair-panel";
 import { setupPedersenPanel } from "./pedersen-panel";
 import { setupSchnorrPanel } from "./schnorr-panel";
 import { setupWalkPanel } from "./walk-panel";
-
-await init();
 
 setupWalkPanel({
   canvas: document.getElementById("stage-walk") as HTMLCanvasElement,

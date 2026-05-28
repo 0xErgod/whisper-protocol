@@ -1,3 +1,17 @@
+// Read-side aggregator: queries the on-chain event log for the four
+// event types this protocol emits and merges them into a single
+// time-sorted feed for dApps to display.
+//
+// Event shapes match the modules they come from one-for-one:
+//
+//   EncryptionKeyRegistered  ← whisper_protocol::registry
+//   EnvelopePosted           ← whisper_protocol::envelopes
+//   SecretCommitted          ← whisper_protocol::commitments
+//   SecretOpened             ← whisper_protocol::commitments
+//
+// All field elements arrive from Sui JSON-RPC as decimal strings
+// (chain's `u256` encoding) — we keep them as strings end-to-end.
+
 import type { SuiClient } from "@mysten/sui/client";
 import {
   MODULE_COMMITMENTS,
@@ -5,15 +19,6 @@ import {
   MODULE_REGISTRY,
 } from "./constants.js";
 import { normalizeAddress } from "./address.js";
-import {
-  bytesArrayFromUnknown,
-  bytesFromArray,
-  detectEnvelopeFormatVersion,
-  idArrayFromUnknown,
-  idFromUnknown,
-  numberArrayFromUnknown,
-  stringFromBytes,
-} from "./envelope-codec.js";
 
 export interface GasInfo {
   computationMist: bigint;
@@ -28,35 +33,28 @@ export interface FeedKeyEvent {
   timestampMs: number;
   keyObjectId: string | null;
   account: string;
-  encryptionScheme: string;
+  pubkeyX: string;
+  pubkeyY: string;
   keyVersion: number;
   gas: GasInfo | null;
 }
 
-/**
- * v5 envelope event. The unified primitive: 1..N recipients, hybrid
- * construction. The legacy `kind: "envelope"` and
- * `kind: "multi-envelope"` variants from prior protocol versions are
- * not surfaced by this feed — the current deployment only emits v5.
- */
 export interface FeedEnvelopeEvent {
   kind: "envelope";
   txDigest: string;
   timestampMs: number;
-  envelopeId: string;
-  formatVersion: number;
+  envelopeObjectId: string;
   sender: string;
-  recipients: string[];
-  recipientKeyIds: string[];
-  recipientKeyVersions: number[];
-  context: Uint8Array;
-  schema: string;
-  encryptionScheme: string;
-  ephPubkey: Uint8Array;
-  payloadNonce: Uint8Array;
-  ciphertext: Uint8Array;
-  wrappedKeys: Uint8Array[];
-  wrapNonces: Uint8Array[];
+  recipient: string;
+  recipientKeyId: string;
+  recipientKeyVersion: number;
+  senderPkX: string;
+  senderPkY: string;
+  recipientPkX: string;
+  recipientPkY: string;
+  envelopeId: string;
+  encodingId: string;
+  macTag: string;
   gas: GasInfo | null;
 }
 
@@ -65,11 +63,10 @@ export interface FeedCommittedEvent {
   txDigest: string;
   timestampMs: number;
   commitmentId: string;
-  formatVersion: number;
   author: string;
-  schema: string;
-  hashScheme: string;
-  commitment: Uint8Array;
+  encodingId: string;
+  commitmentX: string;
+  commitmentY: string;
   gas: GasInfo | null;
 }
 
@@ -79,11 +76,11 @@ export interface FeedOpenedEvent {
   timestampMs: number;
   commitmentId: string;
   author: string;
-  schema: string;
-  hashScheme: string;
-  commitment: Uint8Array;
-  encodedSecret: Uint8Array;
-  salt: Uint8Array;
+  encodingId: string;
+  commitmentX: string;
+  commitmentY: string;
+  stream: string[];
+  blinding: string;
   gas: GasInfo | null;
 }
 
@@ -99,41 +96,18 @@ interface SuiEventEnvelope {
   parsedJson: Record<string, unknown>;
 }
 
-interface EnvelopeSnapshot {
-  formatVersion: number;
-  encryptionScheme: string;
-  ephPubkey: Uint8Array;
-  payloadNonce: Uint8Array;
-  ciphertext: Uint8Array;
-  wrappedKeys: Uint8Array[];
-  wrapNonces: Uint8Array[];
+function idFromUnknown(raw: unknown): string | null {
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && "id" in (raw as Record<string, unknown>)) {
+    const inner = (raw as { id?: unknown }).id;
+    if (typeof inner === "string") return inner;
+  }
+  return null;
 }
 
-async function fetchEnvelopeSnapshots(
-  suiClient: SuiClient,
-  envelopeIds: string[],
-): Promise<Map<string, EnvelopeSnapshot>> {
-  const out = new Map<string, EnvelopeSnapshot>();
-  if (envelopeIds.length === 0) return out;
-  const objs = await suiClient.multiGetObjects({
-    ids: envelopeIds,
-    options: { showContent: true },
-  });
-  for (const o of objs) {
-    if (!o.data?.objectId || !o.data.content) continue;
-    const f = (o.data.content as { fields?: Record<string, unknown> }).fields;
-    if (!f) continue;
-    out.set(o.data.objectId, {
-      formatVersion: detectEnvelopeFormatVersion(f),
-      encryptionScheme: stringFromBytes(f.encryption_scheme),
-      ephPubkey: bytesFromArray(f.eph_pubkey),
-      payloadNonce: bytesFromArray(f.payload_nonce),
-      ciphertext: bytesFromArray(f.ciphertext),
-      wrappedKeys: bytesArrayFromUnknown(f.wrapped_keys),
-      wrapNonces: bytesArrayFromUnknown(f.wrap_nonces),
-    });
-  }
-  return out;
+function stringArrayOf(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[]).map((x) => String(x ?? ""));
 }
 
 async function fetchGasForTxs(
@@ -206,11 +180,6 @@ export async function fetchFeed(
     }),
   ]);
 
-  const envelopeIds = (envRes.data as SuiEventEnvelope[]).map((e) =>
-    String(e.parsedJson.envelope_id ?? ""),
-  );
-  const snapshots = await fetchEnvelopeSnapshots(suiClient, envelopeIds.filter(Boolean));
-
   const allDigests = [
     ...(keyRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
     ...(envRes.data as SuiEventEnvelope[]).map((e) => e.id.txDigest),
@@ -229,7 +198,8 @@ export async function fetchFeed(
       timestampMs: Number(e.timestampMs ?? 0),
       keyObjectId: idFromUnknown(j.key_id),
       account: normalizeAddress(String(j.account ?? "")),
-      encryptionScheme: stringFromBytes(j.encryption_scheme),
+      pubkeyX: String(j.pubkey_x ?? "0"),
+      pubkeyY: String(j.pubkey_y ?? "0"),
       keyVersion: Number(j.key_version ?? 0),
       gas: gas.get(e.id.txDigest) ?? null,
     };
@@ -237,29 +207,22 @@ export async function fetchFeed(
 
   const envelopeEvents: FeedEnvelopeEvent[] = (envRes.data as SuiEventEnvelope[]).map((e) => {
     const j = e.parsedJson;
-    const envelopeId = String(j.envelope_id ?? "");
-    const snapshot = snapshots.get(envelopeId);
-    const recipients = Array.isArray(j.recipients)
-      ? (j.recipients as unknown[]).map((r) => normalizeAddress(String(r ?? "")))
-      : [];
     return {
       kind: "envelope",
       txDigest: e.id.txDigest,
       timestampMs: Number(e.timestampMs ?? 0),
-      envelopeId,
-      formatVersion: Number(j.format_version ?? snapshot?.formatVersion ?? 5),
+      envelopeObjectId: String(j.envelope_object_id ?? ""),
       sender: normalizeAddress(String(j.sender ?? "")),
-      recipients,
-      recipientKeyIds: idArrayFromUnknown(j.recipient_key_ids),
-      recipientKeyVersions: numberArrayFromUnknown(j.recipient_key_versions),
-      context: bytesFromArray(j.context),
-      schema: stringFromBytes(j.schema),
-      encryptionScheme: stringFromBytes(j.encryption_scheme),
-      ephPubkey: snapshot?.ephPubkey ?? new Uint8Array(),
-      payloadNonce: snapshot?.payloadNonce ?? new Uint8Array(),
-      ciphertext: snapshot?.ciphertext ?? new Uint8Array(),
-      wrappedKeys: snapshot?.wrappedKeys ?? [],
-      wrapNonces: snapshot?.wrapNonces ?? [],
+      recipient: normalizeAddress(String(j.recipient ?? "")),
+      recipientKeyId: String(j.recipient_key_id ?? ""),
+      recipientKeyVersion: Number(j.recipient_key_version ?? 0),
+      senderPkX: String(j.sender_pk_x ?? "0"),
+      senderPkY: String(j.sender_pk_y ?? "0"),
+      recipientPkX: String(j.recipient_pk_x ?? "0"),
+      recipientPkY: String(j.recipient_pk_y ?? "0"),
+      envelopeId: String(j.envelope_id ?? "0"),
+      encodingId: String(j.encoding_id ?? "0"),
+      macTag: String(j.mac_tag ?? "0"),
       gas: gas.get(e.id.txDigest) ?? null,
     };
   });
@@ -271,11 +234,10 @@ export async function fetchFeed(
       txDigest: e.id.txDigest,
       timestampMs: Number(e.timestampMs ?? 0),
       commitmentId: String(j.commitment_id ?? ""),
-      formatVersion: Number(j.format_version ?? 1),
       author: normalizeAddress(String(j.author ?? "")),
-      schema: stringFromBytes(j.schema),
-      hashScheme: stringFromBytes(j.hash_scheme),
-      commitment: bytesFromArray(j.commitment),
+      encodingId: String(j.encoding_id ?? "0"),
+      commitmentX: String(j.commitment_x ?? "0"),
+      commitmentY: String(j.commitment_y ?? "0"),
       gas: gas.get(e.id.txDigest) ?? null,
     };
   });
@@ -288,11 +250,11 @@ export async function fetchFeed(
       timestampMs: Number(e.timestampMs ?? 0),
       commitmentId: String(j.commitment_id ?? ""),
       author: normalizeAddress(String(j.author ?? "")),
-      schema: stringFromBytes(j.schema),
-      hashScheme: stringFromBytes(j.hash_scheme),
-      commitment: bytesFromArray(j.commitment),
-      encodedSecret: bytesFromArray(j.encoded_secret),
-      salt: bytesFromArray(j.salt),
+      encodingId: String(j.encoding_id ?? "0"),
+      commitmentX: String(j.commitment_x ?? "0"),
+      commitmentY: String(j.commitment_y ?? "0"),
+      stream: stringArrayOf(j.stream),
+      blinding: String(j.blinding ?? "0"),
       gas: gas.get(e.id.txDigest) ?? null,
     };
   });

@@ -25,6 +25,29 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # The SDK depends on `crypto-wasm` (built from crates/crypto-wasm
+      # via wasm-pack). Without a freshly-built pkg/ directory, the
+      # workspace `link:` dep resolves to a missing target and
+      # `pnpm install` fails. Install Rust + wasm-pack, then run the
+      # SDK's `wasm` script to populate pkg/ before pnpm install.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache the WASM build under its own key so it doesn't fight
+          # the rust job's native-target cache.
+          shared-key: ts-wasm
+          workspaces: ". -> target"
+      - name: install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: build crypto-wasm pkg
+        run: |
+          wasm-pack build crates/crypto-wasm --target bundler \
+            --out-dir pkg --out-name crypto_wasm --release
+
       - name: install
         run: pnpm install --frozen-lockfile
 

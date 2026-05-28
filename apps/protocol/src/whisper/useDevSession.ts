@@ -1,26 +1,34 @@
+// Optional in-browser signer for testing flows without a wallet that
+// can target the dev devnet. Mirrors useWhisperKeys' BJJ derivation:
+// signs the canonical message with an Ed25519 keypair from env, feeds
+// the resulting 64-byte signature into deriveFromSignature.
+//
+// Phase-3 minimal rewire — Phase 4 will polish UX (better error
+// messages, env-validation diagnostics, etc.).
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { parseSerializedSignature } from "@mysten/sui/cryptography";
 import { fromHex } from "@mysten/sui/utils";
 import type { Transaction } from "@mysten/sui/transactions";
 import {
-  CURRENT_DERIVATION_VERSION,
-  ROOT_SCOPE,
   canonicalMessageBytes,
   deriveFromSignature,
-  type DerivedEncryptionKeypair,
-  type DerivationPath,
-} from "@whisper-protocol/wallet-derived-keys";
+  type DerivedBabyJubKeypair,
+} from "@whisper-protocol/sdk";
 import { ACTIVE_CHAIN, suiClient } from "./client";
 import type { ActiveAccount, TxExecutionResult } from "./session";
 import type { WhisperKeysState } from "./useWhisperKeys";
 
+const DERIVATION_VERSION = 1;
+const SCOPE = "root";
+
 const env = import.meta.env;
 
-export const DEV_SIGNER_ENABLED = (env.VITE_ENABLE_DEV_SIGNER as string | undefined) === "true";
-const DEV_SIGNER_KEYS_JSON = env.VITE_DEV_SIGNER_KEYS as string | undefined;
-const DEV_SIGNER_LABEL = (env.VITE_DEV_SIGNER_LABEL as string | undefined) ?? "dev signer";
-const DEV_SIGNER_SECRET_KEY = env.VITE_DEV_SIGNER_SECRET_KEY as string | undefined;
+export const DEV_SIGNER_ENABLED = env.VITE_ENABLE_DEV_SIGNER === "true";
+const DEV_SIGNER_KEYS_JSON = env.VITE_DEV_SIGNER_KEYS;
+const DEV_SIGNER_LABEL = env.VITE_DEV_SIGNER_LABEL ?? "dev signer";
+const DEV_SIGNER_SECRET_KEY = env.VITE_DEV_SIGNER_SECRET_KEY;
 const ACTIVE_LABEL_STORAGE_KEY = "whisper:dev-signer:active-label";
 
 function decodeSecretKey(secret: string): Uint8Array | string {
@@ -134,7 +142,7 @@ function writeStoredLabel(label: string) {
   try {
     localStorage.setItem(ACTIVE_LABEL_STORAGE_KEY, label);
   } catch {
-    // best-effort; some environments (private mode, sandbox) block storage
+    // best-effort
   }
 }
 
@@ -145,13 +153,12 @@ export function useDevSession(): DevSession {
     if (config.signers.length === 0) return null;
     const stored = readStoredLabel();
     if (stored && config.signers.some((s) => s.label === stored)) return stored;
-    return config.signers[0].label;
+    return config.signers[0]!.label;
   });
 
   const [account, setAccount] = useState<ActiveAccount | null>(null);
-  const [keys, setKeys] = useState<DerivedEncryptionKeypair | null>(null);
+  const [keys, setKeys] = useState<DerivedBabyJubKeypair | null>(null);
   const [error, setError] = useState<string | null>(config.configError);
-  const [signPath, setSignPath] = useState<DerivationPath | null>(null);
 
   const activeSigner = useMemo<ConfiguredSigner | null>(() => {
     if (!activeLabel) return null;
@@ -163,7 +170,6 @@ export function useDevSession(): DevSession {
       setAccount(null);
       setKeys(null);
       setError(null);
-      setSignPath(null);
       return;
     }
     if (config.configError) {
@@ -180,15 +186,10 @@ export function useDevSession(): DevSession {
 
     let cancelled = false;
     setKeys(null);
-    setSignPath(null);
     (async () => {
       try {
         const { signer, label, address } = activeSigner;
-        const message = {
-          address,
-          version: CURRENT_DERIVATION_VERSION,
-          scope: ROOT_SCOPE,
-        };
+        const message = { address, version: DERIVATION_VERSION, scope: SCOPE };
         const signed = await signer.signPersonalMessage(canonicalMessageBytes(message));
         const parsed = parseSerializedSignature(signed.signature);
         if (parsed.signatureScheme !== "ED25519") {
@@ -198,7 +199,6 @@ export function useDevSession(): DevSession {
         if (cancelled) return;
         setAccount({ address, source: "dev", label });
         setKeys(derived);
-        setSignPath("personal-message");
         setError(null);
       } catch (e) {
         if (cancelled) return;
@@ -249,7 +249,6 @@ export function useDevSession(): DevSession {
       deriving: false,
       error,
       schemeError: null,
-      signPath,
       derive: async () => keys,
       clear: async () => {},
     },

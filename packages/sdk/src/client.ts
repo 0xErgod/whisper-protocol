@@ -1,35 +1,30 @@
+// `WhisperClient` — the SDK's entry point. Holds the Sui client,
+// package id, and registry id, and exposes the operations a dApp
+// composes to send and read envelopes.
+//
+// Single-recipient by design: every envelope mirrors
+// `crates/protocol::envelope`, with the BJJ seal/open construction
+// running over crypto-wasm. Multi-recipient delivery is "post N
+// envelopes" composed at the dApp layer.
+
 import type { SuiClient } from "@mysten/sui/client";
-import { encryptForRecipientsV5, tryDecryptV5, tryDecryptV5Utf8 } from "./encrypt-unified.js";
-import type { UnifiedEncryptedPayload } from "./encrypt-unified.js";
-import { buildPostV5EnvelopeTx, buildRegisterKeyTx } from "./tx.js";
+import { buildPostEnvelopeTx, buildRegisterKeyTx } from "./tx.js";
 import {
   fetchEncryptionKeyRecord,
   fetchRegistryEntries,
   fetchRegistryEntry,
 } from "./registry.js";
 import type { EncryptionKeyRecord, RegistryEntry } from "./registry.js";
-import {
-  fetchV5Envelope,
-  fetchV5Inbox,
-  recipientIndexInV5Envelope,
-  assertCanReadV5Envelope,
-  canReadV5Envelope,
-} from "./envelope-unified.js";
-import type { OnChainV5Envelope } from "./envelope-unified.js";
-import { fetchEnvelope as fetchLegacyEnvelope } from "./envelope.js";
-import type { OnChainEnvelope as OnChainLegacyEnvelope } from "./envelope.js";
+import { fetchEnvelope } from "./envelope.js";
+import type { OnChainEnvelope } from "./envelope.js";
+import { open, seal } from "./suite.js";
+import type { Envelope, Payload } from "./suite.js";
 import { normalizeAddress } from "./address.js";
-import {
-  CURRENT_ENVELOPE_FORMAT_VERSION,
-  ENCRYPTION_SCHEME_UNIFIED,
-  MAX_RECIPIENTS,
-  SDK_PROTOCOL_VERSION,
-} from "./constants.js";
+import { SDK_PROTOCOL_VERSION } from "./constants.js";
 import {
   assertWriteCompatible,
   readOnChainProtocolVersion,
 } from "./protocol.js";
-import { requireUnifiedEncryptionSuite } from "./suites-unified.js";
 
 export interface WhisperClientConfig {
   suiClient: SuiClient;
@@ -38,27 +33,29 @@ export interface WhisperClientConfig {
   protocolVersion?: number;
 }
 
-export interface PrepareSendV5Args {
+/**
+ * Inputs for `prepareSend`: caller supplies the sender's BJJ keypair
+ * (seed + pubkey) and the recipient's Sui address. The client looks
+ * up the recipient's current key in the registry, runs `suite.seal`,
+ * and builds the matching PTB.
+ */
+export interface PrepareSendArgs {
   senderAddress: string;
-  /** 1..MAX_RECIPIENTS recipient addresses. N=1 is a degenerate group, not a separate primitive. */
-  recipientAddresses: string[];
-  plaintext: Uint8Array | string;
-  schema?: string;
-  context?: Uint8Array;
+  senderSeed: Uint8Array;
+  senderPubkeyX: string;
+  senderPubkeyY: string;
+  recipientAddress: string;
+  envelopeId: string;
+  payload: Payload;
 }
 
-export interface PreparedSendV5 {
-  tx: ReturnType<typeof buildPostV5EnvelopeTx>;
-  payload: UnifiedEncryptedPayload;
-  recipients: RegistryEntry[];
-  formatVersion: number;
-  encryptionScheme: string;
-}
-
-export interface RecipientKeyResolution {
-  recipientKeyId: string | null;
-  keyVersion: number;
-  encryptionScheme: string;
+export interface PreparedSend {
+  /** PTB ready to sign + execute. */
+  tx: ReturnType<typeof buildPostEnvelopeTx>;
+  /** Sealed envelope (the on-chain post mirrors these fields). */
+  envelope: Envelope;
+  /** The recipient's resolved registry entry. */
+  recipient: RegistryEntry;
 }
 
 export class WhisperClient {
@@ -77,10 +74,12 @@ export class WhisperClient {
     this.expectedProtocolVersion = config.protocolVersion ?? SDK_PROTOCOL_VERSION;
   }
 
-  async assertWriteCompatible(input?: {
-    formatVersion?: number;
-    encryptionScheme?: string;
-  }): Promise<number> {
+  /**
+   * Refuse to write if the deployed package doesn't match this SDK's
+   * expected `protocol_version`. Memoizes the first successful check
+   * so repeated callers don't re-dev-inspect.
+   */
+  async assertWriteCompatible(): Promise<number> {
     if (this._onChainProtocolVersion !== null) {
       return this._onChainProtocolVersion;
     }
@@ -90,8 +89,6 @@ export class WhisperClient {
     this._protocolCheckPromise = (async () => {
       const onChain = await assertWriteCompatible(this.suiClient, this.packageId, {
         expectedProtocolVersion: this.expectedProtocolVersion,
-        formatVersion: input?.formatVersion ?? CURRENT_ENVELOPE_FORMAT_VERSION,
-        encryptionScheme: input?.encryptionScheme ?? ENCRYPTION_SCHEME_UNIFIED,
       });
       this._onChainProtocolVersion = onChain;
       return onChain;
@@ -101,10 +98,6 @@ export class WhisperClient {
     } finally {
       this._protocolCheckPromise = null;
     }
-  }
-
-  async assertProtocolCompatible(): Promise<number> {
-    return this.assertWriteCompatible();
   }
 
   get onChainProtocolVersion(): number | null {
@@ -123,149 +116,80 @@ export class WhisperClient {
     return fetchEncryptionKeyRecord(this.suiClient, keyObjectId);
   }
 
-  fetchInbox(
-    ownerAddress: string,
-    options?: { limit?: number },
-  ): Promise<OnChainV5Envelope[]> {
-    return fetchV5Inbox(this.suiClient, this.packageId, ownerAddress, options);
+  fetchEnvelope(envelopeObjectId: string): Promise<OnChainEnvelope | null> {
+    return fetchEnvelope(this.suiClient, envelopeObjectId);
   }
 
-  fetchEnvelope(envelopeId: string): Promise<OnChainV5Envelope | null> {
-    return fetchV5Envelope(this.suiClient, envelopeId);
-  }
-
-  /**
-   * Read a v1/v2 envelope from a prior deployment. Use this only when
-   * you know the envelope predates the v5 unification — for current
-   * deployments call `fetchEnvelope` instead.
-   */
-  fetchLegacyEnvelope(envelopeId: string): Promise<OnChainLegacyEnvelope | null> {
-    return fetchLegacyEnvelope(this.suiClient, envelopeId);
-  }
-
-  canReadEnvelope(envelope: Pick<OnChainV5Envelope, "formatVersion" | "encryptionScheme">): boolean {
-    return canReadV5Envelope(envelope);
-  }
-
-  buildRegisterKeyTx(encryptionPublicKey: Uint8Array, encryptionScheme?: string) {
+  buildRegisterKeyTx(args: { pubkeyX: string; pubkeyY: string }) {
     return buildRegisterKeyTx({
       packageId: this.packageId,
       registryId: this.registryId,
-      encryptionPublicKey,
-      encryptionScheme,
+      pubkeyX: args.pubkeyX,
+      pubkeyY: args.pubkeyY,
     });
   }
 
   /**
-   * Prepare a v5 envelope send for 1..N recipients.
-   *
-   * The recipient list is de-duplicated client-side (preserving order)
-   * so the on-chain duplicate-recipient guard never fires for innocent
-   * input. N=1 is a degenerate group; the on-chain entry point and the
-   * cryptographic construction are identical to N≥2.
+   * Look up the recipient's current registry entry, seal the payload
+   * client-side via `suite.seal`, and build the on-chain post PTB.
+   * Returns the prepared transaction plus the sealed envelope (so the
+   * dApp can log it, hash it, etc. before signing).
    */
-  async prepareSendV5(args: PrepareSendV5Args): Promise<PreparedSendV5> {
-    if (args.recipientAddresses.length === 0) {
-      throw new Error("prepareSendV5 requires at least one recipient");
-    }
-    if (args.recipientAddresses.length > MAX_RECIPIENTS) {
+  async prepareSend(args: PrepareSendArgs): Promise<PreparedSend> {
+    const recipient = await this.fetchRegistryEntry(args.recipientAddress);
+    if (!recipient) {
       throw new Error(
-        `prepareSendV5 supports at most ${MAX_RECIPIENTS} recipients (got ${args.recipientAddresses.length})`,
+        `Recipient ${normalizeAddress(args.recipientAddress)} has no registry entry. They must call register_encryption_key first.`,
       );
     }
-    const seen = new Set<string>();
-    const dedupedAddresses: string[] = [];
-    for (const a of args.recipientAddresses) {
-      const norm = normalizeAddress(a);
-      if (seen.has(norm)) continue;
-      seen.add(norm);
-      dedupedAddresses.push(a);
-    }
-    const recipients: RegistryEntry[] = [];
-    for (const addr of dedupedAddresses) {
-      const entry = await this.fetchRegistryEntry(addr);
-      if (!entry) {
-        throw new Error(
-          `Recipient ${normalizeAddress(addr)} has no registry entry. They must call register_encryption_key first.`,
-        );
-      }
-      recipients.push(entry);
-    }
-    const payload = encryptForRecipientsV5({
-      senderAddress: args.senderAddress,
-      recipients: recipients.map((r) => ({
-        address: r.account,
-        publicKey: r.encryptionPubkey,
-      })),
-      plaintext: args.plaintext,
+    const envelope = seal({
+      senderSeed: args.senderSeed,
+      senderPkX: args.senderPubkeyX,
+      senderPkY: args.senderPubkeyY,
+      recipientPkX: recipient.pubkeyX,
+      recipientPkY: recipient.pubkeyY,
+      envelopeId: args.envelopeId,
+      payload: args.payload,
     });
-    const tx = buildPostV5EnvelopeTx({
+    const tx = buildPostEnvelopeTx({
       packageId: this.packageId,
       registryId: this.registryId,
-      recipients: recipients.map((r) => ({
-        address: r.account,
-        keyId: r.currentKeyId,
-        keyVersion: r.keyVersion,
-      })),
-      schema: args.schema,
-      context: args.context,
-      formatVersion: CURRENT_ENVELOPE_FORMAT_VERSION,
-      payload,
+      recipient: recipient.account,
+      recipientKeyId: recipient.currentKeyId,
+      recipientKeyVersion: recipient.keyVersion,
+      envelope,
     });
-    return {
-      tx,
-      payload,
-      recipients,
-      formatVersion: CURRENT_ENVELOPE_FORMAT_VERSION,
-      encryptionScheme: payload.encryptionScheme,
-    };
-  }
-
-  assertCanReadEnvelope(
-    envelope: Pick<OnChainV5Envelope, "formatVersion" | "encryptionScheme">,
-  ): void {
-    assertCanReadV5Envelope(envelope);
+    return { tx, envelope, recipient };
   }
 
   /**
-   * Decrypt a v5 envelope addressed to (or co-addressed to)
-   * `recipientAddress`. Returns null if the address isn't in the
-   * envelope's recipient list, if the wrap fails (wrong private key),
-   * or if the AEAD verification fails.
+   * Decrypt an on-chain envelope addressed to `recipientPubkey`.
+   * Returns the recovered payload or throws `WhisperOpenError` if the
+   * envelope isn't for this recipient or the MAC fails.
    */
-  decryptEnvelope(input: {
-    envelope: OnChainV5Envelope;
-    recipientAddress: string;
-    recipientPrivateKey: Uint8Array;
-  }): Uint8Array | null {
-    const idx = recipientIndexInV5Envelope(input.envelope, input.recipientAddress);
-    if (idx < 0) return null;
-    const wrappedKey = input.envelope.wrappedKeys[idx];
-    const wrapNonce = input.envelope.wrapNonces[idx];
-    if (!wrappedKey || !wrapNonce) return null;
-    const suite = requireUnifiedEncryptionSuite(input.envelope.encryptionScheme);
-    return suite.decrypt({
-      encryptionScheme: input.envelope.encryptionScheme,
-      senderAddress: input.envelope.sender,
-      recipientAddress: input.recipientAddress,
-      recipientPrivateKey: input.recipientPrivateKey,
-      ephPubkey: input.envelope.ephPubkey,
-      payloadNonce: input.envelope.payloadNonce,
-      ciphertext: input.envelope.ciphertext,
-      wrappedKey,
-      wrapNonce,
+  decryptEnvelope(args: {
+    envelope: OnChainEnvelope;
+    recipientSeed: Uint8Array;
+    recipientPubkeyX: string;
+    recipientPubkeyY: string;
+  }): Payload {
+    const projection: Envelope = {
+      senderPkX: args.envelope.senderPkX,
+      senderPkY: args.envelope.senderPkY,
+      recipientPkX: args.envelope.recipientPkX,
+      recipientPkY: args.envelope.recipientPkY,
+      envelopeId: args.envelope.envelopeId,
+      encodingId: args.envelope.encodingId,
+      ciphertext: args.envelope.ciphertext,
+      macTag: args.envelope.macTag,
+    };
+    return open({
+      recipientSeed: args.recipientSeed,
+      recipientPkX: args.recipientPubkeyX,
+      recipientPkY: args.recipientPubkeyY,
+      envelope: projection,
     });
   }
 
-  decryptEnvelopeUtf8(
-    input: Parameters<WhisperClient["decryptEnvelope"]>[0],
-  ): string | null {
-    const bytes = this.decryptEnvelope(input);
-    return bytes === null ? null : new TextDecoder().decode(bytes);
-  }
-
-  static encryptForRecipientsV5 = encryptForRecipientsV5;
-  static tryDecryptV5 = tryDecryptV5;
-  static tryDecryptV5Utf8 = tryDecryptV5Utf8;
   static readOnChainProtocolVersion = readOnChainProtocolVersion;
 }
