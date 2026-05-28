@@ -184,8 +184,16 @@ export function Compose({ registry, keys, account, txExecutor }: Props) {
               <span className="mono-trunc">{receipt.envelopeId.slice(0, 12)}…</span>
             </div>
             <div className="receipt-row">
+              <span>encoding_id</span>
+              <span className="mono-trunc">{receipt.encodingId.slice(0, 12)}…</span>
+            </div>
+            <div className="receipt-row">
               <span>ciphertext</span>
               <span>{receipt.ciphertextLen} field elements</span>
+            </div>
+            <div className="receipt-row">
+              <span>mac_tag</span>
+              <span className="mono-trunc">{receipt.macTag.slice(0, 12)}…</span>
             </div>
           </div>
         )}
