@@ -3,13 +3,20 @@ import type { SuiTransactionBlockResponse } from "@mysten/sui/client";
 import {
   buildCommitTx,
   buildOpenTx,
+  buildOpenWithProofTx,
   cryptoWasm,
+  proveCommitmentOpening,
   verifyOpening,
   commit as sdkCommit,
+  DEFAULT_PROVER_URL,
   type Opening,
   type RegistryEntry,
 } from "@whisper-protocol/sdk";
 import { PACKAGE_ID, suiClient } from "../whisper/client";
+
+// Prover-server URL: overridable via Vite env for non-default setups.
+const PROVER_URL =
+  (import.meta.env.VITE_PROVER_URL as string | undefined) ?? DEFAULT_PROVER_URL;
 import type { ActiveAccount, DemoMode, TxExecutor } from "../whisper/session";
 import { RawId } from "./RawId";
 
@@ -27,7 +34,12 @@ interface PendingCommit {
   opening: Opening;
   committed: boolean;
   opened: boolean;
+  /** Set once a ZK partial-open proof has verified on chain. */
+  provenFirstValue: string | null;
 }
+
+/** Progress phases for the proof-open flow, surfaced in the UI. */
+type ProofPhase = "idle" | "proving" | "posting" | "verified";
 
 /**
  * Fresh blinding scalar as a decimal string. Pedersen hiding requires
@@ -62,6 +74,7 @@ export function Commit({ account, txExecutor }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingCommit | null>(null);
+  const [proofPhase, setProofPhase] = useState<ProofPhase>("idle");
 
   const canCommit = Boolean(account && txExecutor && text.trim().length > 0 && !busy);
 
@@ -112,7 +125,9 @@ export function Commit({ account, txExecutor }: Props) {
         opening: result.opening,
         committed: true,
         opened: false,
+        provenFirstValue: null,
       });
+      setProofPhase("idle");
       setText("");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -153,6 +168,66 @@ export function Commit({ account, txExecutor }: Props) {
     }
   }
 
+  /**
+   * ZK partial open: prove (off-chain, via prover-server) that we know
+   * an opening whose stream[0] equals the claimed value, then post the
+   * proof for on-chain verification. Only stream[0] becomes public; the
+   * rest of the opening stays private. Distinct from the full reveal
+   * above — the commitment is not consumed.
+   */
+  async function proveAndOpen() {
+    if (!account || !txExecutor || !pending) return;
+    setBusy(true);
+    setErr(null);
+    const claimedFirstValue = pending.opening.stream[0]!;
+    try {
+      setProofPhase("proving");
+      console.debug("[commit] requesting proof", {
+        prover: PROVER_URL,
+        commitmentObjectId: pending.commitmentObjectId,
+        claimedFirstValue: `${claimedFirstValue.slice(0, 10)}…`,
+      });
+      const proofBytes = await proveCommitmentOpening({
+        commitmentX: pending.commitmentX,
+        commitmentY: pending.commitmentY,
+        opening: pending.opening,
+        claimedFirstValue,
+        proverUrl: PROVER_URL,
+      });
+      console.info("[commit] proof produced", { proofBytes: proofBytes.length });
+
+      setProofPhase("posting");
+      const tx = buildOpenWithProofTx({
+        packageId: PACKAGE_ID,
+        commitmentObjectId: pending.commitmentObjectId,
+        claimedFirstValue,
+        proofBytes,
+      });
+      const exec = await txExecutor(tx);
+      const full = await suiClient.waitForTransaction({
+        digest: exec.digest,
+        options: { showEffects: true },
+      });
+      const status = full.effects?.status;
+      if (!status || status.status !== "success") {
+        throw new Error(`open_with_proof tx failed (${status?.status ?? "unknown"})${status?.error ? `: ${status.error}` : ""}`);
+      }
+      console.info("[commit] proof verified on chain", {
+        txDigest: full.digest,
+        commitmentObjectId: pending.commitmentObjectId,
+      });
+      setProofPhase("verified");
+      setPending({ ...pending, provenFirstValue: claimedFirstValue });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[commit] proof-open failed", msg);
+      setErr(msg);
+      setProofPhase("idle");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="window">
       <div className="window-header">
@@ -179,9 +254,26 @@ export function Commit({ account, txExecutor }: Props) {
                 {busy ? "committing…" : "post commitment"}
               </button>
             ) : (
-              <button type="button" className="compose-send" disabled={busy} onClick={postOpen}>
-                {busy ? "opening…" : "reveal (open commitment)"}
-              </button>
+              <div className="commit-actions">
+                <button
+                  type="button"
+                  className="compose-send"
+                  disabled={busy}
+                  onClick={proveAndOpen}
+                  title="prove knowledge of stream[0] without revealing the rest"
+                >
+                  {proofPhase === "proving"
+                    ? "generating proof…"
+                    : proofPhase === "posting"
+                      ? "verifying on chain…"
+                      : pending.provenFirstValue
+                        ? "prove again"
+                        : "open with proof (ZK)"}
+                </button>
+                <button type="button" className="compose-send" disabled={busy} onClick={postOpen}>
+                  {busy && proofPhase === "idle" ? "revealing…" : "reveal (full open)"}
+                </button>
+              </div>
             )}
           </>
         )}
@@ -210,6 +302,14 @@ export function Commit({ account, txExecutor }: Props) {
                 {pending.opened ? "opened (revealed on chain)" : "committed (opening held locally)"}
               </span>
             </div>
+            {pending.provenFirstValue && (
+              <div className="receipt-row">
+                <span>zk partial open</span>
+                <span style={{ color: "var(--good)" }} className="mono-trunc">
+                  verified · stream[0] = {pending.provenFirstValue.slice(0, 10)}…
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -22,8 +22,8 @@ export const LOCALNET: NetworkConfig = {
 
 export const DEVNET: NetworkConfig = {
   rpcUrl: "http://sui-devnet:9000",
-  packageId: "0x130805b437bda6999a9079f7fa50044d4a4b7d1c9adfb5e940af5c52d9ad93ef",
-  registryId: "0xa529b66986d5637e21e6ea1e3e32b57473c7ec312157b48bce27e0e98ae61ce5",
+  packageId: "0xad371607373b0478315290792eeb9e6d8c90016499999158accdfc71148b92d0",
+  registryId: "0x65a41743ee2a86f236facbb5541be9b6085caa4ca8783fe3907a44eb80b7a778",
   note: "Shared dev devnet at host `sui-devnet:9000`. IDs are populated per deploy by scripts/deploy-devnet.ps1 (writes networks.json then runs gen:networks). The default target of the demo dApp and SDK tests; override per-developer via VITE_SUI_RPC_URL / VITE_PACKAGE_ID / VITE_REGISTRY_ID.",
 };
 
